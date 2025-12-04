@@ -1,0 +1,8 @@
+Weight scale factor: 122.86502267986987
+Input scale factor: 127.0
+Bias scale factor: 15603.857880343474
+
+Original weight range: [-1.0336546335966095, 0.7674074886796302]
+Original bias range: [-5.963930583995007, 4.286537249254104]
+
+Quantized model accuracy: 92.13%
