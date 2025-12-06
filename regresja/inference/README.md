@@ -1,14 +1,28 @@
-# Vivado HDL Files - Softmax Regression
+# Inference RTL Implementation
 
 Verilog source files for FPGA implementation of softmax regression inference.
 
+## Folder Structure
+
+| Folder | Description |
+|--------|-------------|
+| `rtl/` | Verilog RTL source files for inference logic |
+| `contraints/` | Pin constraint files (XDC format for Xilinx FPGAs) |
+
 ## Files
+
+### RTL Files (`rtl/`)
 
 | File | Description |
 |------|-------------|
 | `inference.v` | Main inference module with multiply-accumulate logic and state machine |
 | `load_weights.v` | UART receiver for loading weights/biases into BRAM |
-| `pins.v` | Pin constraints file (XDC format for Xilinx) |
+
+### Constraints (`contraints/`)
+
+| File | Description |
+|------|-------------|
+| `pins.xdc` | Pin assignments for Xilinx FPGA (Basys 3 / Nexys A7) |
 
 ## Module Hierarchy
 

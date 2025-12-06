@@ -16,10 +16,22 @@ The number typically corresponds to the MNIST test set index.
 
 ## Usage
 
-### Send Single Image
+### Send Single Image to Softmax Regression
 
 ```bash
 uv run regresja/python/send_image.py test_images/00001.png COM3 115200
+```
+
+### Send to Two-Hidden-Layer Network
+
+```bash
+uv run 2_ukryte/python/send_image.py test_images/00001.png COM3 115200
+```
+
+### Send to LeNet-5 CNN
+
+```bash
+uv run le-net/python/send_image.py test_images/00001.png COM3 115200
 ```
 
 ### Test All Images

@@ -14,9 +14,8 @@ Single-layer softmax (logistic) regression classifier for MNIST digits.
 
 | Folder | Description |
 |--------|-------------|
-| `notebooks/` | Jupyter notebooks for training and experimentation |
 | `python/` | Python scripts for training, export, and UART communication |
-| `vivado/` | Verilog HDL source files for FPGA implementation |
+| `inference/` | Verilog HDL source files and constraints for FPGA implementation |
 | `data/` | Saved preprocessing parameters (StandardScaler) |
 | `outputs/` | Exported model weights and biases |
 

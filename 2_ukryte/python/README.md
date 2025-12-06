@@ -1,12 +1,14 @@
 # Python Scripts - Two-Hidden-Layer Network
 
-Scripts for exporting and uploading the multi-layer model.
+Scripts for training, exporting, and uploading the multi-layer model.
 
 ## Files
 
 | Script | Description |
 |--------|-------------|
-| `export_weights.py` | Extract INT8 weights from PyTorch quantized model |
+| `siec_2_ukryte.py` | Train two-hidden-layer neural network model |
+| `siec_int8.py` | Alternative training script with INT8 quantization |
+| `export_weights.py` | Extract INT8 weights from trained model |
 | `send_weights.py` | Upload all layer weights to FPGA via UART |
 
 ## Weight Export

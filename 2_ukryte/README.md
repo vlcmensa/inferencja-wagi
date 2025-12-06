@@ -26,21 +26,32 @@ Input (784) → Hidden1 (16) → ReLU → Hidden2 (16) → ReLU → Output (10)
 
 | Folder | Description |
 |--------|-------------|
-| `notebooks/` | Jupyter notebooks for training and INT8 quantization |
-| `python/` | Python scripts for weight export and UART communication |
-| `vivado/` | Verilog HDL source files for FPGA |
+| `python/` | Python scripts for training, weight export, and UART communication |
+| `verilog/` | Verilog HDL source files for FPGA implementation |
 | `outputs/` | Exported weights and biases |
 
 ## Quantization
 
-Uses PyTorch quantization-aware training:
-- Weights: INT8 (per-channel quantization)
+Uses PyTorch with manual quantization:
+- Weights: INT8 (scaled quantization)
 - Biases: INT32 (accumulated scale)
 - Activations: INT8 with ReLU
 
+## Training
+
+Run the training script:
+
+```bash
+uv run python/siec_2_ukryte.py
+```
+
+This generates:
+- Model checkpoint: `outputs/mnist_2hidden.pth`
+- ONNX export: `outputs/mnist_2hidden.onnx`
+
 ## Expected Accuracy
 
-Higher than softmax regression due to non-linear feature extraction.
+Higher than softmax regression due to non-linear feature extraction (typically 97-98%).
 
 
 

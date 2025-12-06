@@ -1,4 +1,4 @@
-# Vivado HDL Files - Two-Hidden-Layer Network
+# Verilog HDL Files - Two-Hidden-Layer Network
 
 Verilog source files for FPGA implementation of multi-layer inference.
 
@@ -7,7 +7,7 @@ Verilog source files for FPGA implementation of multi-layer inference.
 | File | Description |
 |------|-------------|
 | `weight_load.v` | UART receiver and BRAM storage for all 3 layers |
-| `pins.v` | Pin constraints file (XDC format) |
+| `pins.v` | Pin constraints file (XDC format for Xilinx FPGAs) |
 
 ## Memory Layout
 
