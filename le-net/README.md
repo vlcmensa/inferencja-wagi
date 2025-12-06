@@ -64,26 +64,21 @@ This generates:
 - `outputs/mnist_cnn.pth` - PyTorch model checkpoint
 - `outputs/mnist_cnn.onnx` - ONNX export
 - `outputs/mem/*.mem` - Quantized weights and biases (hex format)
+- `outputs/bin/*.bin` - Binary files for UART transmission
 
-### 2. Convert to Binary
-
-```bash
-uv run ../shared/convert_to_binary.py outputs/mem outputs/bin
-```
-
-### 3. Upload Weights to FPGA
+### 2. Upload Weights to FPGA
 
 ```bash
 uv run python/send_weights.py COM3 115200
 ```
 
-### 4. Send Test Image
+### 3. Send Test Image
 
 ```bash
 uv run python/send_image.py ../test_images/00001.png COM3 115200
 ```
 
-### 5. Test All Images
+### 4. Test All Images
 
 ```bash
 uv run python/test_all_images.py

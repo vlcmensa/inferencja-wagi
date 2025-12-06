@@ -35,7 +35,7 @@ This generates:
 ### 2. Convert to Binary
 
 ```bash
-uv run ../shared/convert_to_binary.py outputs/mem outputs/bin
+uv run python/convert_to_binary.py outputs/mem outputs/bin
 ```
 
 ### 3. Upload Weights to FPGA

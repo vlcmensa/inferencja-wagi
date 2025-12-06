@@ -25,7 +25,7 @@ This project implements neural network inference on FPGA hardware for classifyin
 
 1. **Train model** - Run Python script (e.g., `python/soft_reg_lepsza_kwant.py`)
 2. **Export weights** - Save as `.mem` files (hex format for Verilog)
-3. **Convert to binary** - Use `shared/convert_to_binary.py` for UART transmission
+3. **Convert to binary** - Use `regresja/python/convert_to_binary.py` for UART transmission
 4. **Upload to FPGA** - Use `send_weights.py` via serial port
 5. **Run inference** - Send test images with `send_image.py`
 6. **Check result** - Read predicted digit from 7-segment display or LEDs

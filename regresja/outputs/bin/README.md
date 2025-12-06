@@ -14,7 +14,7 @@ Raw binary files for uploading to FPGA via serial port.
 Created by running:
 
 ```bash
-uv run ../../shared/convert_to_binary.py ../mem/ ./
+uv run ../../python/convert_to_binary.py ../mem/ ./
 ```
 
 ## Transmission Order
