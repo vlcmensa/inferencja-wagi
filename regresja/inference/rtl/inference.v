@@ -302,9 +302,29 @@ module softmax_regression_top (
     // Control signals
     wire start_inference_pulse;
     
+    // Predicted digit RAM signals
+    wire digit_ram_wr_en;
+    wire [7:0] digit_ram_rd_data;
+    
+    // UART TX signals for digit reader
+    wire [7:0] tx_data;
+    wire tx_send;
+    wire tx_busy;
+    wire tx_out;
+    
+    // UART RX signals for digit reader
+    wire [7:0] digit_rx_data;
+    wire digit_rx_ready;
+    
     // LED and display registers
     reg [15:0] led_reg;
-    reg [3:0] display_digit;
+    
+    // Display digit signals
+    wire [3:0] digit_left;   // From memory (persistent)
+    wire [3:0] digit_right;  // Current predicted_digit
+    
+    // Edge detector for inference_done (to create write pulse)
+    reg inference_done_prev;
     
     // =========================================================================
     // Weight Loader
@@ -385,12 +405,87 @@ module softmax_regression_top (
     assign start_inference_pulse = img_loaded && !img_loaded_prev;
     
     // =========================================================================
+    // Edge detector for inference_done (to write predicted digit to RAM)
+    // =========================================================================
+    always @(posedge clk) begin
+        if (rst)
+            inference_done_prev <= 0;
+        else
+            inference_done_prev <= inference_done;
+    end
+    
+    assign digit_ram_wr_en = inference_done && !inference_done_prev;
+    
+    // =========================================================================
+    // Predicted Digit RAM
+    // =========================================================================
+    predicted_digit_ram u_predicted_digit_ram (
+        .clk(clk),
+        .wr_en(digit_ram_wr_en),
+        .wr_data(predicted_digit),
+        .rd_addr(1'b0),  // Always read from address 0
+        .rd_data(digit_ram_rd_data)
+    );
+    
+    // =========================================================================
+    // UART RX for Digit Reader (separate instance)
+    // =========================================================================
+    uart_rx #(
+        .CLK_FREQ(100_000_000),
+        .BAUD_RATE(115200)
+    ) u_digit_rx (
+        .clk(clk),
+        .rst(rst),
+        .rx(rx),
+        .data(digit_rx_data),
+        .ready(digit_rx_ready)
+    );
+    
+    // =========================================================================
+    // UART TX for responses
+    // =========================================================================
+    uart_tx #(
+        .CLK_FREQ(100_000_000),
+        .BAUD_RATE(115200)
+    ) u_digit_tx (
+        .clk(clk),
+        .rst(rst),
+        .data(tx_data),
+        .send(tx_send),
+        .tx(tx_out),
+        .busy(tx_busy)
+    );
+    
+    // =========================================================================
+    // Digit Reader
+    // =========================================================================
+    digit_reader u_digit_reader (
+        .clk(clk),
+        .rst(rst),
+        .rx_data(digit_rx_data),
+        .rx_ready(digit_rx_ready),
+        .digit_data(digit_ram_rd_data),
+        .tx_data(tx_data),
+        .tx_send(tx_send),
+        .tx_busy(tx_busy)
+    );
+    
+    // =========================================================================
+    // Digit Display Reader - Reads from predicted_digit_ram
+    // =========================================================================
+    digit_display_reader u_digit_display_reader (
+        .clk(clk),
+        .rst(rst),
+        .digit_ram_data(digit_ram_rd_data),
+        .display_digit(digit_left)
+    );
+    
+    // =========================================================================
     // LED Control
     // =========================================================================
     always @(posedge clk) begin
         if (rst) begin
             led_reg <= 0;
-            display_digit <= 0;
         end else begin
             // Show loader status when loading, inference result when done
             if (!weights_loaded) begin
@@ -403,10 +498,6 @@ module softmax_regression_top (
                 led_reg[7] <= weights_loaded;
                 led_reg[15:8] <= loader_led[15:8];
             end
-            
-            if (inference_done) begin
-                display_digit <= predicted_digit;
-            end
         end
     end
     
@@ -415,16 +506,20 @@ module softmax_regression_top (
     // =========================================================================
     // 7-Segment Display
     // =========================================================================
+    // Rightmost digit shows current predicted_digit, leftmost shows stored value from memory
+    assign digit_right = predicted_digit;
+    
     seven_segment_display u_display (
         .clk(clk),
         .rst(rst),
-        .digit(display_digit),
+        .digit_left(digit_left),
+        .digit_right(digit_right),
         .seg(seg),
         .an(an)
     );
     
-    // TX not used for now
-    assign tx = 1'b1;
+    // Connect TX output
+    assign tx = tx_out;
 
 endmodule
 
@@ -579,38 +674,308 @@ endmodule
 
 
 // =============================================================================
+// Digit Display Reader - Reads digit from predicted_digit_ram
+// =============================================================================
+module digit_display_reader (
+    input wire clk,
+    input wire rst,
+    input wire [7:0] digit_ram_data,  // Data from predicted_digit_ram
+    output reg [3:0] display_digit    // 4-bit digit extracted from memory
+);
+
+    always @(posedge clk) begin
+        if (rst) begin
+            display_digit <= 0;
+        end else begin
+            // Extract lower 4 bits (digit is stored in lower nibble)
+            display_digit <= digit_ram_data[3:0];
+        end
+    end
+
+endmodule
+
+
+// =============================================================================
 // 7-Segment Display Controller
 // =============================================================================
 module seven_segment_display (
     input wire clk,
     input wire rst,
-    input wire [3:0] digit,       // 0-9 to display
-    output reg [6:0] seg,         // Segments a-g (active low)
-    output reg [3:0] an           // Anodes (active low)
+    input wire [3:0] digit_left,   // Leftmost digit (from memory)
+    input wire [3:0] digit_right,  // Rightmost digit (current)
+    output reg [6:0] seg,           // Segments a-g (active low)
+    output reg [3:0] an             // Anodes (active low)
 );
 
-    // Only use rightmost digit (an[0])
+    // Time-multiplexing counter for switching between digits
+    // At 100 MHz, divide to ~1 kHz refresh rate (50,000 cycles per digit)
+    localparam REFRESH_DIV = 17'd50000;
+    
+    reg [16:0] refresh_counter;
+    reg digit_select;  // 0 = left, 1 = right
+    
+    // 7-segment encoding function
+    function [6:0] seg_encode;
+        input [3:0] digit;
+        begin
+            case (digit)
+                4'd0: seg_encode = 7'b1000000;
+                4'd1: seg_encode = 7'b1111001;
+                4'd2: seg_encode = 7'b0100100;
+                4'd3: seg_encode = 7'b0110000;
+                4'd4: seg_encode = 7'b0011001;
+                4'd5: seg_encode = 7'b0010010;
+                4'd6: seg_encode = 7'b0000010;
+                4'd7: seg_encode = 7'b1111000;
+                4'd8: seg_encode = 7'b0000000;
+                4'd9: seg_encode = 7'b0010000;
+                default: seg_encode = 7'b0111111;  // Dash for invalid
+            endcase
+        end
+    endfunction
+
     always @(posedge clk) begin
         if (rst) begin
-            an <= 4'b1110;  // Only an[0] active
+            refresh_counter <= 0;
+            digit_select <= 0;
+            an <= 4'b1111;  // All off
             seg <= 7'b1111111;
         end else begin
-            an <= 4'b1110;
+            // Increment refresh counter
+            if (refresh_counter >= REFRESH_DIV - 1) begin
+                refresh_counter <= 0;
+                digit_select <= ~digit_select;  // Toggle between left and right
+            end else begin
+                refresh_counter <= refresh_counter + 1;
+            end
             
-            // 7-segment encoding (active low)
-            // Segment order: gfedcba
-            case (digit)
-                4'd0: seg <= 7'b1000000;
-                4'd1: seg <= 7'b1111001;
-                4'd2: seg <= 7'b0100100;
-                4'd3: seg <= 7'b0110000;
-                4'd4: seg <= 7'b0011001;
-                4'd5: seg <= 7'b0010010;
-                4'd6: seg <= 7'b0000010;
-                4'd7: seg <= 7'b1111000;
-                4'd8: seg <= 7'b0000000;
-                4'd9: seg <= 7'b0010000;
-                default: seg <= 7'b0111111;  // Dash for invalid
+            // Select which digit to display
+            if (digit_select == 0) begin
+                // Display leftmost digit (an[3])
+                an <= 4'b0111;  // an[3] active (leftmost)
+                seg <= seg_encode(digit_left);
+            end else begin
+                // Display rightmost digit (an[0])
+                an <= 4'b1110;  // an[0] active (rightmost)
+                seg <= seg_encode(digit_right);
+            end
+        end
+    end
+
+endmodule
+
+
+// =============================================================================
+// Predicted Digit RAM - Stores the predicted digit at a fixed address
+// =============================================================================
+// Memory Layout:
+//   Address 0: Predicted digit (4-bit value, stored as 8-bit byte)
+//
+// This BRAM is separate from weight/bias/image memories.
+// When inference completes, the predicted digit (0-9) is written to address 0.
+// =============================================================================
+module predicted_digit_ram (
+    input wire clk,
+    input wire wr_en,           // Write enable (pulse when inference_done)
+    input wire [3:0] wr_data,   // Predicted digit value (0-9)
+    input wire rd_addr,         // Read address (always 0 for now)
+    output reg [7:0] rd_data    // Read data (digit in lower 4 bits)
+);
+
+    // Single byte BRAM
+    (* ram_style = "block" *) reg [7:0] ram [0:0];
+    
+    // Synchronous write
+    always @(posedge clk) begin
+        if (wr_en) begin
+            ram[0] <= {4'b0, wr_data};  // Store 4-bit digit in lower nibble
+        end
+    end
+    
+    // Synchronous read
+    always @(posedge clk) begin
+        rd_data <= ram[rd_addr];
+    end
+
+endmodule
+
+
+// =============================================================================
+// UART Transmitter Module (115200 baud compatible)
+// =============================================================================
+module uart_tx #(
+    parameter CLK_FREQ = 100_000_000,
+    parameter BAUD_RATE = 115200
+)(
+    input wire clk,
+    input wire rst,
+    input wire [7:0] data,      // Byte to transmit
+    input wire send,            // Pulse to start transmission
+    output reg tx,              // UART TX output line
+    output reg busy             // HIGH while transmitting
+);
+
+    localparam CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
+    
+    // State definitions
+    localparam STATE_IDLE  = 2'd0;
+    localparam STATE_START = 2'd1;
+    localparam STATE_DATA  = 2'd2;
+    localparam STATE_STOP  = 2'd3;
+
+    reg [1:0] state;
+    reg [15:0] clk_cnt;           // Clock counter
+    reg [2:0] bit_cnt;            // Bit counter (0-7)
+    reg [7:0] tx_shift;           // Shift register for outgoing bits
+
+    // UART transmit state machine
+    always @(posedge clk) begin
+        if (rst) begin
+            state <= STATE_IDLE;
+            clk_cnt <= 0;
+            bit_cnt <= 0;
+            tx <= 1'b1;  // Idle state is HIGH
+            tx_shift <= 0;
+            busy <= 0;
+        end else begin
+            case (state)
+                // ----------------------------------------
+                // IDLE: Wait for send signal
+                // ----------------------------------------
+                STATE_IDLE: begin
+                    tx <= 1'b1;  // Idle state is HIGH
+                    busy <= 0;
+                    if (send) begin
+                        state <= STATE_START;
+                        tx_shift <= data;
+                        clk_cnt <= 0;
+                        busy <= 1;
+                    end
+                end
+                
+                // ----------------------------------------
+                // START: Send start bit (LOW)
+                // ----------------------------------------
+                STATE_START: begin
+                    tx <= 1'b0;  // Start bit is LOW
+                    if (clk_cnt == CLKS_PER_BIT - 1) begin
+                        clk_cnt <= 0;
+                        bit_cnt <= 0;
+                        state <= STATE_DATA;
+                    end else begin
+                        clk_cnt <= clk_cnt + 1;
+                    end
+                end
+                
+                // ----------------------------------------
+                // DATA: Send 8 data bits (LSB first)
+                // ----------------------------------------
+                STATE_DATA: begin
+                    tx <= tx_shift[bit_cnt];
+                    if (clk_cnt == CLKS_PER_BIT - 1) begin
+                        clk_cnt <= 0;
+                        if (bit_cnt == 7) begin
+                            bit_cnt <= 0;
+                            state <= STATE_STOP;
+                        end else begin
+                            bit_cnt <= bit_cnt + 1;
+                        end
+                    end else begin
+                        clk_cnt <= clk_cnt + 1;
+                    end
+                end
+                
+                // ----------------------------------------
+                // STOP: Send stop bit (HIGH)
+                // ----------------------------------------
+                STATE_STOP: begin
+                    tx <= 1'b1;  // Stop bit is HIGH
+                    if (clk_cnt == CLKS_PER_BIT - 1) begin
+                        clk_cnt <= 0;
+                        state <= STATE_IDLE;
+                    end else begin
+                        clk_cnt <= clk_cnt + 1;
+                    end
+                end
+                
+                default: state <= STATE_IDLE;
+            endcase
+        end
+    end
+
+endmodule
+
+
+// =============================================================================
+// Digit Reader - Handles UART read requests for predicted digit
+// =============================================================================
+// Protocol:
+//   Request: Send byte 0xCC to request predicted digit
+//   Response: FPGA sends 1 byte containing the predicted digit (0-9) in lower 4 bits
+// =============================================================================
+module digit_reader (
+    input wire clk,
+    input wire rst,
+    input wire [7:0] rx_data,        // UART RX data
+    input wire rx_ready,              // UART RX ready signal
+    input wire [7:0] digit_data,      // Read data from predicted_digit_ram
+    output reg [7:0] tx_data,         // Data to send via UART TX
+    output reg tx_send,               // Pulse to start UART TX transmission
+    input wire tx_busy                // UART TX busy signal
+);
+
+    // Request byte constant
+    localparam REQUEST_BYTE = 8'hCC;
+    
+    // States
+    localparam STATE_IDLE = 2'd0;
+    localparam STATE_SEND_RESPONSE = 2'd1;
+    
+    reg [1:0] state;
+    reg rx_ready_prev;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            state <= STATE_IDLE;
+            tx_data <= 0;
+            tx_send <= 0;
+            rx_ready_prev <= 0;
+        end else begin
+            // Default: tx_send is pulse
+            tx_send <= 0;
+            
+            // Detect rising edge of rx_ready
+            rx_ready_prev <= rx_ready;
+            
+            case (state)
+                // ----------------------------------------
+                // IDLE: Wait for read request (0xCC)
+                // ----------------------------------------
+                STATE_IDLE: begin
+                    if (rx_ready && !rx_ready_prev) begin
+                        // New byte received
+                        if (rx_data == REQUEST_BYTE) begin
+                            // Valid request - prepare response
+                            tx_data <= digit_data;
+                            state <= STATE_SEND_RESPONSE;
+                        end
+                    end
+                end
+                
+                // ----------------------------------------
+                // SEND_RESPONSE: Send the digit via UART TX
+                // ----------------------------------------
+                STATE_SEND_RESPONSE: begin
+                    if (!tx_busy) begin
+                        // UART TX is idle, send the data
+                        tx_send <= 1;
+                        state <= STATE_IDLE;
+                    end
+                end
+                
+                default: begin
+                    state <= STATE_IDLE;
+                end
             endcase
         end
     end
