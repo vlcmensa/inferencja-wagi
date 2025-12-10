@@ -183,9 +183,8 @@ module inference (
                 // ADD_BIAS: Flush pipeline and add bias
                 // ============================================
                 STATE_ADD_BIAS: begin
-                    // Last multiply
-                    weight_reg <= $signed(weight_data);
-                    pixel_reg <= input_pixel;
+                    // Pipeline flush cycle 1: multiply existing registers, accumulate previous product
+                    // Don't load new data - weight_reg and pixel_reg already contain last values
                     product <= $signed(weight_reg) * $signed(pixel_reg);
                     accumulator <= accumulator + {{16{product[15]}}, product};
                     
@@ -193,15 +192,12 @@ module inference (
                 end
                 
                 // ============================================
-                // COMPARE: Compute final product (no accumulation needed here)
+                // COMPARE: Pipeline flush cycle 2 - accumulate the last product
                 // ============================================
                 STATE_COMPARE: begin
-                    // Recompute product for W[783]*P[783]
-                    // (weight_reg and pixel_reg already hold these values)
-                    product <= $signed(weight_reg) * $signed(pixel_reg);
-                    
-                    // NOTE: accumulator already has 783 products (0..782) from STATE_ADD_BIAS
-                    // We don't accumulate here - product will be added in final_score
+                    // Accumulate the product computed in ADD_BIAS state
+                    // This is the final (784th) product
+                    accumulator <= accumulator + {{16{product[15]}}, product};
                     
                     state <= STATE_NEXT_CLASS;
                 end
@@ -210,12 +206,11 @@ module inference (
                 // NEXT_CLASS: Calculate final score and compare
                 // ============================================
                 STATE_NEXT_CLASS: begin : next_class_block
-                    // Final score = accumulator (783 products: 0..782)
-                    //             + product (W[783]*P[783])
+                    // Final score = accumulator (all 784 products: 0..783)
                     //             + bias
-                    // Total: all 784 products + bias
+                    // Product was already accumulated in COMPARE state
                     reg signed [31:0] final_score;
-                    final_score = accumulator + {{16{product[15]}}, product} + current_bias;
+                    final_score = accumulator + current_bias;
                     
                     // Update maximum
                     if (final_score > max_score) begin
