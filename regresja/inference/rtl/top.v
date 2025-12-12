@@ -43,6 +43,18 @@ module top (
     wire        inference_done;
     wire        inference_busy;
     
+    // Class scores from inference module
+    wire signed [31:0] class_score_0;
+    wire signed [31:0] class_score_1;
+    wire signed [31:0] class_score_2;
+    wire signed [31:0] class_score_3;
+    wire signed [31:0] class_score_4;
+    wire signed [31:0] class_score_5;
+    wire signed [31:0] class_score_6;
+    wire signed [31:0] class_score_7;
+    wire signed [31:0] class_score_8;
+    wire signed [31:0] class_score_9;
+    
     // Image RAM signals
     wire [9:0]  img_wr_addr;
     wire [7:0]  img_wr_data;
@@ -56,13 +68,22 @@ module top (
     wire digit_ram_wr_en;
     wire [7:0] digit_ram_rd_data;
     
-    // UART TX signals for digit reader
+    // Scores RAM signals
+    wire scores_ram_wr_en;
+    wire [5:0] scores_ram_rd_addr;
+    wire [7:0] scores_ram_rd_data;
+    
+    // UART TX signals - shared between digit and scores readers
+    wire [7:0] digit_tx_data;
+    wire digit_tx_send;
+    wire [7:0] scores_tx_data;
+    wire scores_tx_send;
     wire [7:0] tx_data;
     wire tx_send;
     wire tx_busy;
     wire tx_out;
     
-    // UART RX signals for digit reader
+    // UART RX signals - shared between digit and scores readers
     wire [7:0] digit_rx_data;
     wire digit_rx_ready;
     
@@ -138,7 +159,17 @@ module top (
         .input_addr(inf_input_addr),
         .predicted_digit(predicted_digit),
         .inference_done(inference_done),
-        .busy(inference_busy)
+        .busy(inference_busy),
+        .class_score_0(class_score_0),
+        .class_score_1(class_score_1),
+        .class_score_2(class_score_2),
+        .class_score_3(class_score_3),
+        .class_score_4(class_score_4),
+        .class_score_5(class_score_5),
+        .class_score_6(class_score_6),
+        .class_score_7(class_score_7),
+        .class_score_8(class_score_8),
+        .class_score_9(class_score_9)
     );
     
     // =========================================================================
@@ -165,6 +196,7 @@ module top (
     end
     
     assign digit_ram_wr_en = inference_done && !inference_done_prev;
+    assign scores_ram_wr_en = inference_done && !inference_done_prev;
     
     // =========================================================================
     // Predicted Digit RAM
@@ -175,6 +207,26 @@ module top (
         .wr_data(predicted_digit),
         .rd_addr(1'b0),  // Always read from address 0
         .rd_data(digit_ram_rd_data)
+    );
+    
+    // =========================================================================
+    // Scores RAM
+    // =========================================================================
+    scores_ram u_scores_ram (
+        .clk(clk),
+        .wr_en(scores_ram_wr_en),
+        .score_0(class_score_0),
+        .score_1(class_score_1),
+        .score_2(class_score_2),
+        .score_3(class_score_3),
+        .score_4(class_score_4),
+        .score_5(class_score_5),
+        .score_6(class_score_6),
+        .score_7(class_score_7),
+        .score_8(class_score_8),
+        .score_9(class_score_9),
+        .rd_addr(scores_ram_rd_addr),
+        .rd_data(scores_ram_rd_data)
     );
     
     // =========================================================================
@@ -207,7 +259,7 @@ module top (
     );
     
     // =========================================================================
-    // Digit Reader
+    // Digit Reader (0xCC protocol)
     // =========================================================================
     digit_reader u_digit_reader (
         .clk(clk),
@@ -215,10 +267,33 @@ module top (
         .rx_data(digit_rx_data),
         .rx_ready(digit_rx_ready),
         .digit_data(digit_ram_rd_data),
-        .tx_data(tx_data),
-        .tx_send(tx_send),
+        .tx_data(digit_tx_data),
+        .tx_send(digit_tx_send),
         .tx_busy(tx_busy)
     );
+    
+    // =========================================================================
+    // Scores Reader (0xCD protocol)
+    // =========================================================================
+    scores_reader u_scores_reader (
+        .clk(clk),
+        .rst(rst),
+        .rx_data(digit_rx_data),
+        .rx_ready(digit_rx_ready),
+        .scores_data(scores_ram_rd_data),
+        .scores_addr(scores_ram_rd_addr),
+        .tx_data(scores_tx_data),
+        .tx_send(scores_tx_send),
+        .tx_busy(tx_busy)
+    );
+    
+    // =========================================================================
+    // TX Arbiter - Multiplex between digit_reader and scores_reader
+    // =========================================================================
+    // Simple OR-based arbiter (only one will be active at a time due to
+    // different request bytes 0xCC vs 0xCD)
+    assign tx_data = digit_tx_send ? digit_tx_data : scores_tx_data;
+    assign tx_send = digit_tx_send | scores_tx_send;
     
     // =========================================================================
     // Digit Display Reader - Reads from predicted_digit_ram

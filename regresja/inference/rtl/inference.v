@@ -55,7 +55,19 @@ module inference (
     // Outputs
     output reg [3:0]  predicted_digit, // 0-9 result
     output reg        inference_done,  // HIGH when inference complete
-    output reg        busy             // HIGH during inference
+    output reg        busy,            // HIGH during inference
+    
+    // Class scores output (for accuracy analysis)
+    output reg signed [31:0] class_score_0,
+    output reg signed [31:0] class_score_1,
+    output reg signed [31:0] class_score_2,
+    output reg signed [31:0] class_score_3,
+    output reg signed [31:0] class_score_4,
+    output reg signed [31:0] class_score_5,
+    output reg signed [31:0] class_score_6,
+    output reg signed [31:0] class_score_7,
+    output reg signed [31:0] class_score_8,
+    output reg signed [31:0] class_score_9
 );
 
     // State machine states
@@ -75,6 +87,9 @@ module inference (
     reg signed [31:0] current_bias;    // Bias for current class
     reg signed [31:0] max_score;       // Maximum score seen so far
     reg [3:0] max_class;               // Class with maximum score
+    
+    // Array to store all class scores for output
+    reg signed [31:0] class_scores [0:9];
     
     // Pipeline registers for timing
     reg signed [7:0] weight_reg;       // Registered weight (signed)
@@ -104,6 +119,30 @@ module inference (
             weight_reg <= 0;
             pixel_reg <= 0;
             product <= 0;
+            
+            // Reset all class scores
+            class_scores[0] <= 0;
+            class_scores[1] <= 0;
+            class_scores[2] <= 0;
+            class_scores[3] <= 0;
+            class_scores[4] <= 0;
+            class_scores[5] <= 0;
+            class_scores[6] <= 0;
+            class_scores[7] <= 0;
+            class_scores[8] <= 0;
+            class_scores[9] <= 0;
+            
+            // Reset score outputs
+            class_score_0 <= 0;
+            class_score_1 <= 0;
+            class_score_2 <= 0;
+            class_score_3 <= 0;
+            class_score_4 <= 0;
+            class_score_5 <= 0;
+            class_score_6 <= 0;
+            class_score_7 <= 0;
+            class_score_8 <= 0;
+            class_score_9 <= 0;
         end else begin
             
             // Default: inference_done is pulse
@@ -217,6 +256,9 @@ module inference (
                     reg signed [31:0] final_score;
                     final_score = accumulator + {{16{product[15]}}, product} + current_bias;
                     
+                    // Store the score for this class
+                    class_scores[current_class] <= final_score;
+                    
                     // Update maximum
                     if (final_score > max_score) begin
                         max_score <= final_score;
@@ -241,6 +283,19 @@ module inference (
                     predicted_digit <= max_class;
                     inference_done <= 1;
                     busy <= 0;
+                    
+                    // Copy all scores to output ports
+                    class_score_0 <= class_scores[0];
+                    class_score_1 <= class_scores[1];
+                    class_score_2 <= class_scores[2];
+                    class_score_3 <= class_scores[3];
+                    class_score_4 <= class_scores[4];
+                    class_score_5 <= class_scores[5];
+                    class_score_6 <= class_scores[6];
+                    class_score_7 <= class_scores[7];
+                    class_score_8 <= class_scores[8];
+                    class_score_9 <= class_scores[9];
+                    
                     state <= STATE_IDLE;
                 end
                 

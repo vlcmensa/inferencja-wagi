@@ -182,15 +182,15 @@ def main():
     print(f"Test data loaded: {len(X_test)} images")
     print()
     
-    # Run inference on all test images
-    print("Running FPGA simulation (with overflow) on all test images...")
+    # Run inference on first 1000 test images
+    print("Running FPGA simulation (with overflow) on first 1000 test images...")
     print("-" * 70)
     
     y_pred = []
     y_true = []
     overflow_count = 0
     
-    num_test = len(X_test)
+    num_test = 1000  # Test first 1000 images only
     
     for i in range(num_test):
         # Preprocess image
@@ -205,12 +205,8 @@ def main():
         y_pred.append(pred)
         y_true.append(y_test[i])
         
-        # Progress indicator
-        if (i + 1) % 1000 == 0 or (i + 1) == num_test:
-            current_acc = accuracy_score(y_true, y_pred) * 100
-            print(f"  Processed: {i+1:5d}/{num_test} images | "
-                  f"Current accuracy: {current_acc:.2f}% | "
-                  f"Overflows: {overflow_count}")
+        # Display result immediately (matching test_fpga_integration.py format)
+        print(f"Img {i:3d} | Label: {y_test[i]} | Pred: {pred:2d} | Scores: {scores.tolist()}")
     
     print("-" * 70)
     print()
