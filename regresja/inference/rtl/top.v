@@ -1,9 +1,12 @@
 /*
 ================================================================================
-Top Module - Complete System with Weight Loading and Inference
+Top Module - Complete System with Unified UART Router
 ================================================================================
 This module instantiates all sub-modules and connects them together.
-Replaces the original softmax_regression_top module.
+Uses a SINGLE uart_rx instance (in uart_router) for the entire system.
+
+Key change: Replaced multiple uart_rx instances with single uart_router that
+demultiplexes incoming bytes to the correct handler.
 ================================================================================
 */
 
@@ -25,6 +28,14 @@ module top (
     // =========================================================================
     // Internal signals
     // =========================================================================
+    
+    // UART Router signals
+    wire [7:0] weight_rx_data;
+    wire weight_rx_ready;
+    wire [7:0] image_rx_data;
+    wire image_rx_ready;
+    wire [7:0] cmd_rx_data;
+    wire cmd_rx_ready;
     
     // Weight loader signals
     wire [12:0] weight_rd_addr;
@@ -83,10 +94,6 @@ module top (
     wire tx_busy;
     wire tx_out;
     
-    // UART RX signals - shared between digit and scores readers
-    wire [7:0] digit_rx_data;
-    wire digit_rx_ready;
-    
     // LED and display registers
     reg [15:0] led_reg;
     
@@ -98,12 +105,29 @@ module top (
     reg inference_done_prev;
     
     // =========================================================================
-    // Weight Loader
+    // UART Router - SINGLE uart_rx for the entire system
+    // =========================================================================
+    uart_router u_uart_router (
+        .clk(clk),
+        .rst(rst),
+        .rx(rx),
+        .weights_loaded(weights_loaded),
+        .weight_rx_data(weight_rx_data),
+        .weight_rx_ready(weight_rx_ready),
+        .image_rx_data(image_rx_data),
+        .image_rx_ready(image_rx_ready),
+        .cmd_rx_data(cmd_rx_data),
+        .cmd_rx_ready(cmd_rx_ready)
+    );
+    
+    // =========================================================================
+    // Weight Loader (receives routed data from uart_router)
     // =========================================================================
     weight_loader u_weight_loader (
         .clk(clk),
         .rst(rst),
-        .rx(rx),
+        .rx_data(weight_rx_data),
+        .rx_ready(weight_rx_ready),
         .weight_rd_addr(weight_rd_addr),
         .weight_rd_data(weight_rd_data),
         .bias_rd_addr(bias_rd_addr),
@@ -113,13 +137,14 @@ module top (
     );
     
     // =========================================================================
-    // Image Loader (separate UART protocol)
+    // Image Loader (receives routed data from uart_router)
     // =========================================================================
     image_loader u_image_loader (
         .clk(clk),
         .rst(rst),
-        .rx(rx),
         .weights_loaded(weights_loaded),
+        .rx_data(image_rx_data),
+        .rx_ready(image_rx_ready),
         .wr_addr(img_wr_addr),
         .wr_data(img_wr_data),
         .wr_en(img_wr_en),
@@ -230,20 +255,6 @@ module top (
     );
     
     // =========================================================================
-    // UART RX for Digit Reader (separate instance)
-    // =========================================================================
-    uart_rx #(
-        .CLK_FREQ(100_000_000),
-        .BAUD_RATE(115200)
-    ) u_digit_rx (
-        .clk(clk),
-        .rst(rst),
-        .rx(rx),
-        .data(digit_rx_data),
-        .ready(digit_rx_ready)
-    );
-    
-    // =========================================================================
     // UART TX for responses
     // =========================================================================
     uart_tx #(
@@ -259,13 +270,13 @@ module top (
     );
     
     // =========================================================================
-    // Digit Reader (0xCC protocol)
+    // Digit Reader (0xCC protocol) - uses routed command interface
     // =========================================================================
     digit_reader u_digit_reader (
         .clk(clk),
         .rst(rst),
-        .rx_data(digit_rx_data),
-        .rx_ready(digit_rx_ready),
+        .rx_data(cmd_rx_data),
+        .rx_ready(cmd_rx_ready),
         .digit_data(digit_ram_rd_data),
         .tx_data(digit_tx_data),
         .tx_send(digit_tx_send),
@@ -273,13 +284,13 @@ module top (
     );
     
     // =========================================================================
-    // Scores Reader (0xCD protocol)
+    // Scores Reader (0xCD protocol) - uses routed command interface
     // =========================================================================
     scores_reader u_scores_reader (
         .clk(clk),
         .rst(rst),
-        .rx_data(digit_rx_data),
-        .rx_ready(digit_rx_ready),
+        .rx_data(cmd_rx_data),
+        .rx_ready(cmd_rx_ready),
         .scores_data(scores_ram_rd_data),
         .scores_addr(scores_ram_rd_addr),
         .tx_data(scores_tx_data),
@@ -347,5 +358,3 @@ module top (
     assign tx = tx_out;
 
 endmodule
-
-

@@ -1,6 +1,6 @@
 /*
 ================================================================================
-Softmax Regression Weight Loader via UART
+Softmax Regression Weight Loader via Routed UART
 ================================================================================
 
 Loads trained neural network weights and biases from PC to FPGA BRAM.
@@ -12,9 +12,12 @@ Model: Softmax Regression (Logistic Regression) for MNIST
   - Biases:  10 values (32-bit signed, stored as 4 bytes each little-endian)
 
 Protocol:
-  - Start marker: 0xAA 0x55 (two bytes)
+  - Start marker: 0xAA 0x55 (handled by uart_router)
   - Data bytes: weights (7840 bytes) + biases (40 bytes) = 7880 bytes
-  - End marker: 0x55 0xAA (two bytes)
+  - End marker: 0x55 0xAA (handled by uart_router)
+
+NOTE: This module NO LONGER has its own uart_rx!
+      It receives pre-routed data from uart_router.
 
 Memory Layout:
   Address 0-7839:     Weights (7840 bytes, 8-bit signed)
@@ -53,15 +56,34 @@ module load_weights_top (
     wire [31:0] bias_data;
     wire        transfer_done;
     
+    // Routed UART signals
+    wire [7:0] weight_rx_data;
+    wire weight_rx_ready;
+    
     // For testing: tie read addresses to 0
     assign weight_addr = 13'd0;
     assign bias_addr = 4'd0;
+
+    // UART Router (single uart_rx for the system)
+    uart_router u_uart_router (
+        .clk(clk),
+        .rst(rst),
+        .rx(rx),
+        .weights_loaded(transfer_done),
+        .weight_rx_data(weight_rx_data),
+        .weight_rx_ready(weight_rx_ready),
+        .image_rx_data(),      // Not used in standalone test
+        .image_rx_ready(),     // Not used in standalone test
+        .cmd_rx_data(),        // Not used in standalone test
+        .cmd_rx_ready()        // Not used in standalone test
+    );
 
     // Instantiate the weight loader
     weight_loader u_weight_loader (
         .clk(clk),
         .rst(rst),
-        .rx(rx),
+        .rx_data(weight_rx_data),
+        .rx_ready(weight_rx_ready),
         .weight_rd_addr(weight_addr),
         .weight_rd_data(weight_data),
         .bias_rd_addr(bias_addr),
@@ -79,7 +101,10 @@ endmodule
 module weight_loader (
     input wire clk,               // 100 MHz System Clock
     input wire rst,               // Reset Button (active high)
-    input wire rx,                // UART RX Line
+    
+    // Routed UART interface (from uart_router)
+    input wire [7:0] rx_data,     // Routed RX data
+    input wire rx_ready,          // Routed RX ready signal
     
     // Read port for weights (inference module)
     input wire [12:0] weight_rd_addr,  // 0 to 7839 (13 bits needed)
@@ -96,33 +121,21 @@ module weight_loader (
     output reg [15:0] led
 );
 
-    // Parameters
-    parameter CLK_FREQ = 100_000_000;
-    parameter BAUD_RATE = 115200;
-    
     // Memory sizes
     localparam WEIGHT_SIZE = 7840;   // 784 x 10 weights
     localparam BIAS_SIZE = 10;       // 10 biases
     localparam TOTAL_BYTES = 7880;   // 7840 + 40
     
-    // Protocol markers
-    localparam START_BYTE1 = 8'hAA;
-    localparam START_BYTE2 = 8'h55;
+    // Protocol markers (for end detection)
     localparam END_BYTE1 = 8'h55;
     localparam END_BYTE2 = 8'hAA;
     
     // State machine states
-    localparam STATE_WAIT_START1 = 3'd0;
-    localparam STATE_WAIT_START2 = 3'd1;
-    localparam STATE_RECEIVING   = 3'd2;
-    localparam STATE_CHECK_END   = 3'd3;
-    localparam STATE_DONE        = 3'd4;
-    localparam STATE_ERROR       = 3'd5;
+    localparam STATE_WAIT_DATA   = 3'd0;  // Waiting for first data byte
+    localparam STATE_RECEIVING   = 3'd1;
+    localparam STATE_DONE        = 3'd2;
+    localparam STATE_ERROR       = 3'd3;
 
-    // UART signals
-    wire [7:0] rx_data;
-    wire rx_ready;
-    
     // Block RAM for weights (8-bit values)
     (* ram_style = "block" *) reg [7:0] weight_bram [0:WEIGHT_SIZE-1];
     
@@ -134,22 +147,11 @@ module weight_loader (
     reg [13:0] write_addr;       // Address for writing (0 to 7879)
     reg [7:0] prev_byte;         // Previous byte for end marker detection
     reg blink_toggle;            // For LED blinking
+    reg first_byte;              // Flag to track if we've received the first data byte
     
     // Bias assembly registers (4 bytes -> 32 bits)
     reg [1:0] bias_byte_cnt;     // Which byte of bias we're receiving (0-3)
     reg [31:0] bias_temp;        // Temporary register for assembling bias
-    
-    // UART Receiver Instance
-    uart_rx #(
-        .CLK_FREQ(CLK_FREQ),
-        .BAUD_RATE(BAUD_RATE)
-    ) u_rx (
-        .clk(clk),
-        .rst(rst),
-        .rx(rx),
-        .data(rx_data),
-        .ready(rx_ready)
-    );
 
     // Synchronous read from weight BRAM
     always @(posedge clk) begin
@@ -164,21 +166,22 @@ module weight_loader (
     // Main state machine
     always @(posedge clk) begin
         if (rst) begin
-            state <= STATE_WAIT_START1;
+            state <= STATE_WAIT_DATA;
             write_addr <= 0;
             prev_byte <= 0;
             transfer_done <= 0;
             bias_byte_cnt <= 0;
             bias_temp <= 0;
             blink_toggle <= 0;
+            first_byte <= 1;
             led <= 16'b0000_0000_0000_0010;  // led[1] = waiting for start
         end else begin
             
             case (state)
                 // ============================================
-                // Wait for first start byte (0xAA)
+                // Wait for first data byte (start marker handled by router)
                 // ============================================
-                STATE_WAIT_START1: begin
+                STATE_WAIT_DATA: begin
                     led[1] <= 1;  // Waiting indicator
                     led[2] <= 0;
                     led[3] <= 0;
@@ -188,34 +191,24 @@ module weight_loader (
                         blink_toggle <= ~blink_toggle;
                         led[0] <= blink_toggle;
                         
-                        if (rx_data == START_BYTE1) begin
-                            state <= STATE_WAIT_START2;
-                        end
-                    end
-                end
-                
-                // ============================================
-                // Wait for second start byte (0x55)
-                // ============================================
-                STATE_WAIT_START2: begin
-                    if (rx_ready) begin
-                        blink_toggle <= ~blink_toggle;
-                        led[0] <= blink_toggle;
-                        
-                        if (rx_data == START_BYTE2) begin
-                            // Valid start sequence received
+                        // First byte received from router means start sequence was valid
+                        // The router sends us the 0x55 (second start marker) first,
+                        // then the actual data bytes
+                        if (first_byte) begin
+                            // This is the 0x55 from start marker, skip it
+                            first_byte <= 0;
+                        end else begin
+                            // Real data starts here
                             state <= STATE_RECEIVING;
                             write_addr <= 0;
                             bias_byte_cnt <= 0;
                             bias_temp <= 0;
                             led[1] <= 0;
                             led[2] <= 1;  // Receiving indicator
-                        end else if (rx_data == START_BYTE1) begin
-                            // Another 0xAA, stay in this state
-                            state <= STATE_WAIT_START2;
-                        end else begin
-                            // Invalid sequence, go back to waiting
-                            state <= STATE_WAIT_START1;
+                            
+                            // Store first real data byte
+                            prev_byte <= rx_data;
+                            write_addr <= 1;
                         end
                     end
                 end
@@ -294,128 +287,10 @@ module weight_loader (
                 end
                 
                 default: begin
-                    state <= STATE_WAIT_START1;
+                    state <= STATE_WAIT_DATA;
                 end
             endcase
         end
     end
 
 endmodule
-
-
-// =============================================================================
-// UART Receiver Module (115200 baud compatible)
-// =============================================================================
-module uart_rx #(
-    parameter CLK_FREQ = 100_000_000,
-    parameter BAUD_RATE = 115200
-)(
-    input wire clk,
-    input wire rst,
-    input wire rx,
-    output reg [7:0] data,
-    output reg ready
-);
-
-    localparam CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
-    
-    // State definitions
-    localparam STATE_IDLE  = 2'd0;
-    localparam STATE_START = 2'd1;
-    localparam STATE_DATA  = 2'd2;
-    localparam STATE_STOP  = 2'd3;
-
-    reg [1:0] state;
-    reg [15:0] clk_cnt;           // Clock counter (16 bits for flexibility)
-    reg [2:0] bit_cnt;            // Bit counter (0-7)
-    reg [7:0] rx_shift;           // Shift register for incoming bits
-    reg rx_sync1, rx_sync2;       // Double-flop synchronizer
-
-    // Synchronize RX input (2-stage synchronizer for metastability)
-    always @(posedge clk) begin
-        rx_sync1 <= rx;
-        rx_sync2 <= rx_sync1;
-    end
-
-    // UART receive state machine
-    always @(posedge clk) begin
-        if (rst) begin
-            state <= STATE_IDLE;
-            clk_cnt <= 0;
-            bit_cnt <= 0;
-            data <= 0;
-            rx_shift <= 0;
-            ready <= 0;
-        end else begin
-            ready <= 0;  // Default: ready is only high for 1 cycle
-            
-            case (state)
-                // ----------------------------------------
-                // IDLE: Wait for start bit (falling edge)
-                // ----------------------------------------
-                STATE_IDLE: begin
-                    clk_cnt <= 0;
-                    bit_cnt <= 0;
-                    if (rx_sync2 == 0) begin
-                        state <= STATE_START;
-                    end
-                end
-                
-                // ----------------------------------------
-                // START: Verify start bit at middle
-                // ----------------------------------------
-                STATE_START: begin
-                    if (clk_cnt == (CLKS_PER_BIT / 2)) begin
-                        if (rx_sync2 == 0) begin
-                            // Valid start bit
-                            clk_cnt <= 0;
-                            state <= STATE_DATA;
-                        end else begin
-                            // False start (noise)
-                            state <= STATE_IDLE;
-                        end
-                    end else begin
-                        clk_cnt <= clk_cnt + 1;
-                    end
-                end
-                
-                // ----------------------------------------
-                // DATA: Sample 8 data bits (LSB first)
-                // ----------------------------------------
-                STATE_DATA: begin
-                    if (clk_cnt == CLKS_PER_BIT) begin
-                        clk_cnt <= 0;
-                        rx_shift[bit_cnt] <= rx_sync2;
-                        
-                        if (bit_cnt == 7) begin
-                            bit_cnt <= 0;
-                            state <= STATE_STOP;
-                        end else begin
-                            bit_cnt <= bit_cnt + 1;
-                        end
-                    end else begin
-                        clk_cnt <= clk_cnt + 1;
-                    end
-                end
-                
-                // ----------------------------------------
-                // STOP: Wait for stop bit, output data
-                // ----------------------------------------
-                STATE_STOP: begin
-                    if (clk_cnt == CLKS_PER_BIT) begin
-                        clk_cnt <= 0;
-                        state <= STATE_IDLE;
-                        data <= rx_shift;  // Transfer to output
-                        ready <= 1;        // Signal data valid
-                    end else begin
-                        clk_cnt <= clk_cnt + 1;
-                    end
-                end
-                
-                default: state <= STATE_IDLE;
-            endcase
-        end
-    end
-
-endmodule
-
