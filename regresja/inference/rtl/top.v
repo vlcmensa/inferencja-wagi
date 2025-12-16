@@ -1,9 +1,12 @@
 /*
 ================================================================================
-Top Module - Complete System with Weight Loading and Inference
+Top Module - Complete System with Unified UART Router
 ================================================================================
 This module instantiates all sub-modules and connects them together.
-Replaces the original softmax_regression_top module.
+Uses a SINGLE uart_rx instance (in uart_router) for the entire system.
+
+Key change: Replaced multiple uart_rx instances with single uart_router that
+demultiplexes incoming bytes to the correct handler.
 ================================================================================
 */
 
@@ -26,6 +29,14 @@ module top (
     // Internal signals
     // =========================================================================
     
+    // UART Router signals
+    wire [7:0] weight_rx_data;
+    wire weight_rx_ready;
+    wire [7:0] image_rx_data;
+    wire image_rx_ready;
+    wire [7:0] cmd_rx_data;
+    wire cmd_rx_ready;
+    
     // Weight loader signals
     wire [12:0] weight_rd_addr;
     wire [7:0]  weight_rd_data;
@@ -43,6 +54,18 @@ module top (
     wire        inference_done;
     wire        inference_busy;
     
+    // Class scores from inference module
+    wire signed [31:0] class_score_0;
+    wire signed [31:0] class_score_1;
+    wire signed [31:0] class_score_2;
+    wire signed [31:0] class_score_3;
+    wire signed [31:0] class_score_4;
+    wire signed [31:0] class_score_5;
+    wire signed [31:0] class_score_6;
+    wire signed [31:0] class_score_7;
+    wire signed [31:0] class_score_8;
+    wire signed [31:0] class_score_9;
+    
     // Image RAM signals
     wire [9:0]  img_wr_addr;
     wire [7:0]  img_wr_data;
@@ -56,15 +79,20 @@ module top (
     wire digit_ram_wr_en;
     wire [7:0] digit_ram_rd_data;
     
-    // UART TX signals for digit reader
+    // Scores RAM signals
+    wire scores_ram_wr_en;
+    wire [5:0] scores_ram_rd_addr;
+    wire [7:0] scores_ram_rd_data;
+    
+    // UART TX signals - shared between digit and scores readers
+    wire [7:0] digit_tx_data;
+    wire digit_tx_send;
+    wire [7:0] scores_tx_data;
+    wire scores_tx_send;
     wire [7:0] tx_data;
     wire tx_send;
     wire tx_busy;
     wire tx_out;
-    
-    // UART RX signals for digit reader
-    wire [7:0] digit_rx_data;
-    wire digit_rx_ready;
     
     // LED and display registers
     reg [15:0] led_reg;
@@ -77,12 +105,29 @@ module top (
     reg inference_done_prev;
     
     // =========================================================================
-    // Weight Loader
+    // UART Router - SINGLE uart_rx for the entire system
+    // =========================================================================
+    uart_router u_uart_router (
+        .clk(clk),
+        .rst(rst),
+        .rx(rx),
+        .weights_loaded(weights_loaded),
+        .weight_rx_data(weight_rx_data),
+        .weight_rx_ready(weight_rx_ready),
+        .image_rx_data(image_rx_data),
+        .image_rx_ready(image_rx_ready),
+        .cmd_rx_data(cmd_rx_data),
+        .cmd_rx_ready(cmd_rx_ready)
+    );
+    
+    // =========================================================================
+    // Weight Loader (receives routed data from uart_router)
     // =========================================================================
     weight_loader u_weight_loader (
         .clk(clk),
         .rst(rst),
-        .rx(rx),
+        .rx_data(weight_rx_data),
+        .rx_ready(weight_rx_ready),
         .weight_rd_addr(weight_rd_addr),
         .weight_rd_data(weight_rd_data),
         .bias_rd_addr(bias_rd_addr),
@@ -92,13 +137,14 @@ module top (
     );
     
     // =========================================================================
-    // Image Loader (separate UART protocol)
+    // Image Loader (receives routed data from uart_router)
     // =========================================================================
     image_loader u_image_loader (
         .clk(clk),
         .rst(rst),
-        .rx(rx),
         .weights_loaded(weights_loaded),
+        .rx_data(image_rx_data),
+        .rx_ready(image_rx_ready),
         .wr_addr(img_wr_addr),
         .wr_data(img_wr_data),
         .wr_en(img_wr_en),
@@ -138,7 +184,17 @@ module top (
         .input_addr(inf_input_addr),
         .predicted_digit(predicted_digit),
         .inference_done(inference_done),
-        .busy(inference_busy)
+        .busy(inference_busy),
+        .class_score_0(class_score_0),
+        .class_score_1(class_score_1),
+        .class_score_2(class_score_2),
+        .class_score_3(class_score_3),
+        .class_score_4(class_score_4),
+        .class_score_5(class_score_5),
+        .class_score_6(class_score_6),
+        .class_score_7(class_score_7),
+        .class_score_8(class_score_8),
+        .class_score_9(class_score_9)
     );
     
     // =========================================================================
@@ -165,6 +221,7 @@ module top (
     end
     
     assign digit_ram_wr_en = inference_done && !inference_done_prev;
+    assign scores_ram_wr_en = inference_done && !inference_done_prev;
     
     // =========================================================================
     // Predicted Digit RAM
@@ -178,17 +235,23 @@ module top (
     );
     
     // =========================================================================
-    // UART RX for Digit Reader (separate instance)
+    // Scores RAM
     // =========================================================================
-    uart_rx #(
-        .CLK_FREQ(100_000_000),
-        .BAUD_RATE(115200)
-    ) u_digit_rx (
+    scores_ram u_scores_ram (
         .clk(clk),
-        .rst(rst),
-        .rx(rx),
-        .data(digit_rx_data),
-        .ready(digit_rx_ready)
+        .wr_en(scores_ram_wr_en),
+        .score_0(class_score_0),
+        .score_1(class_score_1),
+        .score_2(class_score_2),
+        .score_3(class_score_3),
+        .score_4(class_score_4),
+        .score_5(class_score_5),
+        .score_6(class_score_6),
+        .score_7(class_score_7),
+        .score_8(class_score_8),
+        .score_9(class_score_9),
+        .rd_addr(scores_ram_rd_addr),
+        .rd_data(scores_ram_rd_data)
     );
     
     // =========================================================================
@@ -207,18 +270,41 @@ module top (
     );
     
     // =========================================================================
-    // Digit Reader
+    // Digit Reader (0xCC protocol) - uses routed command interface
     // =========================================================================
     digit_reader u_digit_reader (
         .clk(clk),
         .rst(rst),
-        .rx_data(digit_rx_data),
-        .rx_ready(digit_rx_ready),
+        .rx_data(cmd_rx_data),
+        .rx_ready(cmd_rx_ready),
         .digit_data(digit_ram_rd_data),
-        .tx_data(tx_data),
-        .tx_send(tx_send),
+        .tx_data(digit_tx_data),
+        .tx_send(digit_tx_send),
         .tx_busy(tx_busy)
     );
+    
+    // =========================================================================
+    // Scores Reader (0xCD protocol) - uses routed command interface
+    // =========================================================================
+    scores_reader u_scores_reader (
+        .clk(clk),
+        .rst(rst),
+        .rx_data(cmd_rx_data),
+        .rx_ready(cmd_rx_ready),
+        .scores_data(scores_ram_rd_data),
+        .scores_addr(scores_ram_rd_addr),
+        .tx_data(scores_tx_data),
+        .tx_send(scores_tx_send),
+        .tx_busy(tx_busy)
+    );
+    
+    // =========================================================================
+    // TX Arbiter - Multiplex between digit_reader and scores_reader
+    // =========================================================================
+    // Simple OR-based arbiter (only one will be active at a time due to
+    // different request bytes 0xCC vs 0xCD)
+    assign tx_data = digit_tx_send ? digit_tx_data : scores_tx_data;
+    assign tx_send = digit_tx_send | scores_tx_send;
     
     // =========================================================================
     // Digit Display Reader - Reads from predicted_digit_ram
@@ -272,5 +358,3 @@ module top (
     assign tx = tx_out;
 
 endmodule
-
-

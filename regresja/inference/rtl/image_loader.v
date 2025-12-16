@@ -1,59 +1,48 @@
 /*
 ================================================================================
-Image Loader - Receives 784-byte image via UART
+Image Loader - Receives 784-byte image via routed UART data
 ================================================================================
-Protocol: 0xBB 0x66, 784 bytes, 0x66 0xBB
+Protocol: Receives data bytes from uart_router (start/end markers handled there)
+          Data format: 784 pixel bytes
+          
+NOTE: This module NO LONGER has its own uart_rx!
+      It receives pre-routed data from uart_router.
 ================================================================================
 */
 
 module image_loader (
     input wire clk,
     input wire rst,
-    input wire rx,
-    input wire weights_loaded,    // Only accept images after weights loaded
+    input wire weights_loaded,        // Only accept images after weights loaded
     
+    // Routed UART interface (from uart_router)
+    input wire [7:0] rx_data,         // Routed RX data
+    input wire rx_ready,              // Routed RX ready signal
+    
+    // Image RAM write interface
     output reg [9:0] wr_addr,
     output reg [7:0] wr_data,
     output reg wr_en,
     output reg image_loaded
 );
 
-    // Protocol: 0xBB 0x66, 784 bytes, 0x66 0xBB
-    localparam IMG_START1 = 8'hBB;
-    localparam IMG_START2 = 8'h66;
+    // Protocol: Data bytes only (markers handled by uart_router)
+    // End marker detection: 0x66 0xBB after 784 bytes
     localparam IMG_END1 = 8'h66;
     localparam IMG_END2 = 8'hBB;
     localparam IMG_SIZE = 784;
 
     // States
-    localparam STATE_WAIT_START1 = 3'd0;
-    localparam STATE_WAIT_START2 = 3'd1;
-    localparam STATE_RECEIVING   = 3'd2;
-    localparam STATE_DONE        = 3'd3;
+    localparam STATE_RECEIVING = 2'd0;
+    localparam STATE_DONE      = 2'd1;
 
-    // UART receiver
-    wire [7:0] rx_data;
-    wire rx_ready;
-    
-    // Instantiate separate UART receiver for image loading
-    uart_rx #(
-        .CLK_FREQ(100_000_000),
-        .BAUD_RATE(115200)
-    ) u_img_rx (
-        .clk(clk),
-        .rst(rst),
-        .rx(rx),
-        .data(rx_data),
-        .ready(rx_ready)
-    );
-    
-    reg [2:0] state;
+    reg [1:0] state;
     reg [9:0] byte_count;
     reg [7:0] prev_byte;
 
     always @(posedge clk) begin
         if (rst) begin
-            state <= STATE_WAIT_START1;
+            state <= STATE_RECEIVING;
             wr_addr <= 0;
             wr_data <= 0;
             wr_en <= 0;
@@ -67,26 +56,6 @@ module image_loader (
             // Only process if weights are loaded
             if (weights_loaded) begin
                 case (state)
-                    STATE_WAIT_START1: begin
-                        if (rx_ready && rx_data == IMG_START1) begin
-                            state <= STATE_WAIT_START2;
-                        end
-                    end
-                    
-                    STATE_WAIT_START2: begin
-                        if (rx_ready) begin
-                            if (rx_data == IMG_START2) begin
-                                state <= STATE_RECEIVING;
-                                byte_count <= 0;
-                                prev_byte <= 0;
-                            end else if (rx_data == IMG_START1) begin
-                                state <= STATE_WAIT_START2;
-                            end else begin
-                                state <= STATE_WAIT_START1;
-                            end
-                        end
-                    end
-                    
                     STATE_RECEIVING: begin
                         if (rx_ready) begin
                             // First, store the previous byte if we have data pending
@@ -110,7 +79,9 @@ module image_loader (
                     
                     STATE_DONE: begin
                         // Go back to waiting for next image
-                        state <= STATE_WAIT_START1;
+                        state <= STATE_RECEIVING;
+                        byte_count <= 0;
+                        prev_byte <= 0;
                     end
                 endcase
             end
@@ -118,5 +89,3 @@ module image_loader (
     end
 
 endmodule
-
-

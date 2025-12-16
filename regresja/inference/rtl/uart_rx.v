@@ -2,7 +2,8 @@
 ================================================================================
 UART Receiver Module (115200 baud compatible)
 ================================================================================
-Universal UART RX module for receiving serial data.
+Single shared UART RX for the entire system.
+Other modules should NOT instantiate their own uart_rx.
 ================================================================================
 */
 
@@ -18,13 +19,18 @@ module uart_rx #(
 );
 
     localparam CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
-    localparam STATE_IDLE=0, STATE_START=1, STATE_DATA=2, STATE_STOP=3;
+    
+    // State definitions
+    localparam STATE_IDLE  = 2'd0;
+    localparam STATE_START = 2'd1;
+    localparam STATE_DATA  = 2'd2;
+    localparam STATE_STOP  = 2'd3;
 
     reg [1:0] state;
-    reg [15:0] clk_cnt;
-    reg [2:0] bit_cnt;
-    reg [7:0] shift_reg;
-    reg rx_sync1, rx_sync2;
+    reg [15:0] clk_cnt;           // Clock counter (16 bits for flexibility)
+    reg [2:0] bit_cnt;            // Bit counter (0-7)
+    reg [7:0] rx_shift;           // Shift register for incoming bits
+    reg rx_sync1, rx_sync2;       // Double-flop synchronizer
 
     // Synchronize RX input (2-stage synchronizer for metastability)
     always @(posedge clk) begin
@@ -39,7 +45,7 @@ module uart_rx #(
             clk_cnt <= 0;
             bit_cnt <= 0;
             data <= 0;
-            shift_reg <= 0;
+            rx_shift <= 0;
             ready <= 0;
         end else begin
             ready <= 0;  // Default: ready is only high for 1 cycle
@@ -80,7 +86,7 @@ module uart_rx #(
                 STATE_DATA: begin
                     if (clk_cnt == CLKS_PER_BIT) begin
                         clk_cnt <= 0;
-                        shift_reg[bit_cnt] <= rx_sync2;
+                        rx_shift[bit_cnt] <= rx_sync2;
                         
                         if (bit_cnt == 7) begin
                             bit_cnt <= 0;
@@ -100,8 +106,8 @@ module uart_rx #(
                     if (clk_cnt == CLKS_PER_BIT) begin
                         clk_cnt <= 0;
                         state <= STATE_IDLE;
-                        data <= shift_reg;  // Transfer to output
-                        ready <= 1;         // Signal data valid
+                        data <= rx_shift;  // Transfer to output
+                        ready <= 1;        // Signal data valid
                     end else begin
                         clk_cnt <= clk_cnt + 1;
                     end
@@ -113,5 +119,3 @@ module uart_rx #(
     end
 
 endmodule
-
-

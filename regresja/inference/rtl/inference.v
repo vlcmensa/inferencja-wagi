@@ -22,9 +22,9 @@ Final output = argmax(score[0..9])
 
 Architecture:
   - Sequential processing: one MAC per clock cycle
-  - For each class: 784 multiply-accumulate operations
-  - Total: 784 x 10 = 7840 cycles for inference
-  - At 100 MHz: ~78.4 µs per image
+  - For each class: 784 multiply-accumulate operations + 1 cycle BRAM wait
+  - Total: ~7850 cycles for inference (784*10 + overhead)
+  - At 100 MHz: ~78.5 µs per image
 
 Interface:
   - Pure logic module - no UART or I/O
@@ -55,17 +55,30 @@ module inference (
     // Outputs
     output reg [3:0]  predicted_digit, // 0-9 result
     output reg        inference_done,  // HIGH when inference complete
-    output reg        busy             // HIGH during inference
+    output reg        busy,            // HIGH during inference
+    
+    // Class scores output (for accuracy analysis)
+    output reg signed [31:0] class_score_0,
+    output reg signed [31:0] class_score_1,
+    output reg signed [31:0] class_score_2,
+    output reg signed [31:0] class_score_3,
+    output reg signed [31:0] class_score_4,
+    output reg signed [31:0] class_score_5,
+    output reg signed [31:0] class_score_6,
+    output reg signed [31:0] class_score_7,
+    output reg signed [31:0] class_score_8,
+    output reg signed [31:0] class_score_9
 );
 
     // State machine states
     localparam STATE_IDLE           = 3'd0;
-    localparam STATE_LOAD_BIAS      = 3'd1;
-    localparam STATE_COMPUTE        = 3'd2;
-    localparam STATE_ADD_BIAS       = 3'd3;
-    localparam STATE_COMPARE        = 3'd4;
-    localparam STATE_NEXT_CLASS     = 3'd5;
-    localparam STATE_DONE           = 3'd6;
+    localparam STATE_WAIT_BIAS      = 3'd1;  // NEW: Wait for BRAM latency
+    localparam STATE_LOAD_BIAS      = 3'd2;
+    localparam STATE_COMPUTE        = 3'd3;
+    localparam STATE_ADD_BIAS       = 3'd4;
+    localparam STATE_COMPARE        = 3'd5;
+    localparam STATE_NEXT_CLASS     = 3'd6;
+    localparam STATE_DONE           = 3'd7;
 
     // Registers
     reg [2:0] state;
@@ -75,6 +88,9 @@ module inference (
     reg signed [31:0] current_bias;    // Bias for current class
     reg signed [31:0] max_score;       // Maximum score seen so far
     reg [3:0] max_class;               // Class with maximum score
+    
+    // Array to store all class scores for output
+    reg signed [31:0] class_scores [0:9];
     
     // Pipeline registers for timing
     reg signed [7:0] weight_reg;       // Registered weight (signed)
@@ -104,6 +120,30 @@ module inference (
             weight_reg <= 0;
             pixel_reg <= 0;
             product <= 0;
+            
+            // Reset all class scores
+            class_scores[0] <= 0;
+            class_scores[1] <= 0;
+            class_scores[2] <= 0;
+            class_scores[3] <= 0;
+            class_scores[4] <= 0;
+            class_scores[5] <= 0;
+            class_scores[6] <= 0;
+            class_scores[7] <= 0;
+            class_scores[8] <= 0;
+            class_scores[9] <= 0;
+            
+            // Reset score outputs
+            class_score_0 <= 0;
+            class_score_1 <= 0;
+            class_score_2 <= 0;
+            class_score_3 <= 0;
+            class_score_4 <= 0;
+            class_score_5 <= 0;
+            class_score_6 <= 0;
+            class_score_7 <= 0;
+            class_score_8 <= 0;
+            class_score_9 <= 0;
         end else begin
             
             // Default: inference_done is pulse
@@ -116,7 +156,7 @@ module inference (
                 STATE_IDLE: begin
                     busy <= 0;
                     if (start_inference && weights_ready) begin
-                        state <= STATE_LOAD_BIAS;
+                        state <= STATE_WAIT_BIAS;  // Go to wait state first
                         current_class <= 0;
                         current_pixel <= 0;
                         accumulator <= 0;
@@ -124,16 +164,26 @@ module inference (
                         max_class <= 0;
                         busy <= 1;
                         
-                        // Request first bias
+                        // Request first bias - BRAM needs 1 cycle to output data
                         bias_addr <= 0;
                     end
                 end
                 
                 // ============================================
-                // LOAD_BIAS: Load bias for current class
+                // WAIT_BIAS: Wait for BRAM read latency (1 cycle)
+                // ============================================
+                STATE_WAIT_BIAS: begin
+                    // bias_addr was set in previous state
+                    // BRAM outputs bias_data on THIS cycle
+                    // We'll read it in the NEXT state (STATE_LOAD_BIAS)
+                    state <= STATE_LOAD_BIAS;
+                end
+                
+                // ============================================
+                // LOAD_BIAS: Load bias for current class (data now valid)
                 // ============================================
                 STATE_LOAD_BIAS: begin
-                    // Bias data available after 1 cycle delay
+                    // Bias data is now valid (waited 1 cycle in STATE_WAIT_BIAS)
                     current_bias <= $signed(bias_data);
                     accumulator <= 0;
                     current_pixel <= 0;
@@ -217,6 +267,9 @@ module inference (
                     reg signed [31:0] final_score;
                     final_score = accumulator + {{16{product[15]}}, product} + current_bias;
                     
+                    // Store the score for this class
+                    class_scores[current_class] <= final_score;
+                    
                     // Update maximum
                     if (final_score > max_score) begin
                         max_score <= final_score;
@@ -227,7 +280,7 @@ module inference (
                         // Move to next class
                         current_class <= current_class + 1;
                         bias_addr <= current_class + 1;
-                        state <= STATE_LOAD_BIAS;
+                        state <= STATE_WAIT_BIAS;  // Wait for BRAM latency
                     end else begin
                         // All classes processed
                         state <= STATE_DONE;
@@ -241,6 +294,19 @@ module inference (
                     predicted_digit <= max_class;
                     inference_done <= 1;
                     busy <= 0;
+                    
+                    // Copy all scores to output ports
+                    class_score_0 <= class_scores[0];
+                    class_score_1 <= class_scores[1];
+                    class_score_2 <= class_scores[2];
+                    class_score_3 <= class_scores[3];
+                    class_score_4 <= class_scores[4];
+                    class_score_5 <= class_scores[5];
+                    class_score_6 <= class_scores[6];
+                    class_score_7 <= class_scores[7];
+                    class_score_8 <= class_scores[8];
+                    class_score_9 <= class_scores[9];
+                    
                     state <= STATE_IDLE;
                 end
                 
