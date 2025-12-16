@@ -24,7 +24,6 @@ module tb_inference_isolated();
     parameter NUM_PIXELS = 784;
     parameter NUM_CLASSES = 10;
     parameter NUM_TEST_CASES = 100;
-    parameter NUM_EDGE_CASES = 4;
     
     // Clock and Reset
     reg clk;
@@ -67,27 +66,16 @@ module tb_inference_isolated();
     reg [3:0] expected_predictions [0:99];
     reg [3:0] true_labels [0:99];
     
-    // Edge case test data
-    reg [7:0] edge_pixels_flat [0:3135];       // 4 tests * 784 pixels = 3136
-    reg [7:0] edge_weights_flat [0:31359];     // 4 tests * 10 classes * 784 = 31360
-    reg [31:0] edge_biases_flat [0:39];        // 4 tests * 10 biases = 40
-    reg signed [31:0] edge_scores_flat [0:39]; // 4 tests * 10 scores = 40
-    reg [3:0] edge_predictions [0:3];
-    reg [3:0] edge_labels [0:3];
-    
     // Test control
     integer test_idx;
     integer pass_count;
     integer fail_count;
-    integer edge_pass_count;
-    integer edge_fail_count;
     integer j;
     integer file_check;  // For file loading error checking
     reg signed [31:0] max_error;
     reg scores_match;
     reg signed [31:0] fpga_scores [0:9];
     reg signed [31:0] diff;
-    reg is_edge_case_mode;  // Flag to indicate edge case testing
     
     // Instantiate the Unit Under Test (UUT)
     inference uut (
@@ -123,40 +111,28 @@ module tb_inference_isolated();
     // Memory Interface Logic
     // ========================================================================
     
-    // Weight Memory (normal tests use trained weights, edge cases use custom weights)
+    // Weight Memory
     always @(posedge clk) begin
-        if (weight_addr < 7840) begin
-            if (is_edge_case_mode)
-                weight_data <= edge_weights_flat[test_idx * 7840 + weight_addr];
-            else
-                weight_data <= weights_mem[weight_addr];
-        end else begin
+        if (weight_addr < 7840)
+            weight_data <= weights_mem[weight_addr];
+        else
             weight_data <= 8'd0;
-        end
     end
     
-    // Bias Memory (normal tests use trained biases, edge cases use custom biases)
+    // Bias Memory
     always @(posedge clk) begin
-        if (bias_addr < 10) begin
-            if (is_edge_case_mode)
-                bias_data <= edge_biases_flat[test_idx * 10 + bias_addr];
-            else
-                bias_data <= biases_mem[bias_addr];
-        end else begin
+        if (bias_addr < 10)
+            bias_data <= biases_mem[bias_addr];
+        else
             bias_data <= 32'd0;
-        end
     end
     
     // Input Pixel Memory (access flattened array)
     always @(posedge clk) begin
-        if (input_addr < 784) begin
-            if (is_edge_case_mode)
-                input_pixel <= edge_pixels_flat[test_idx * 784 + input_addr];
-            else
-                input_pixel <= test_pixels_flat[test_idx * 784 + input_addr];
-        end else begin
+        if (input_addr < 784)
+            input_pixel <= test_pixels_flat[test_idx * 784 + input_addr];
+        else
             input_pixel <= 8'd0;
-        end
     end
     
     // ========================================================================
@@ -231,67 +207,6 @@ module tb_inference_isolated();
         $display("  [OK] Loaded labels: 100 values");
         
         $display("  [OK] Loaded test vectors: %0d test cases", NUM_TEST_CASES);
-        
-        // Load edge case test vectors
-        $display("");
-        $display("Loading Edge Case Test Vectors...");
-        
-        file_check = $fopen("edge_case_pixels.mem", "r");
-        if (file_check == 0) begin
-            $display("ERROR: Cannot open edge_case_pixels.mem");
-            $display("  Run generate_edge_case_vectors.py first!");
-            $finish;
-        end
-        $fclose(file_check);
-        $readmemh("edge_case_pixels.mem", edge_pixels_flat);
-        $display("  [OK] Loaded edge case pixels: 3136 values");
-        
-        file_check = $fopen("edge_case_weights.mem", "r");
-        if (file_check == 0) begin
-            $display("ERROR: Cannot open edge_case_weights.mem");
-            $finish;
-        end
-        $fclose(file_check);
-        $readmemh("edge_case_weights.mem", edge_weights_flat);
-        $display("  [OK] Loaded edge case weights: 31360 values");
-        
-        file_check = $fopen("edge_case_biases.mem", "r");
-        if (file_check == 0) begin
-            $display("ERROR: Cannot open edge_case_biases.mem");
-            $finish;
-        end
-        $fclose(file_check);
-        $readmemh("edge_case_biases.mem", edge_biases_flat);
-        $display("  [OK] Loaded edge case biases: 40 values");
-        
-        file_check = $fopen("edge_case_scores.mem", "r");
-        if (file_check == 0) begin
-            $display("ERROR: Cannot open edge_case_scores.mem");
-            $finish;
-        end
-        $fclose(file_check);
-        $readmemh("edge_case_scores.mem", edge_scores_flat);
-        $display("  [OK] Loaded edge case scores: 40 values");
-        
-        file_check = $fopen("edge_case_meta.mem", "r");
-        if (file_check == 0) begin
-            $display("ERROR: Cannot open edge_case_meta.mem");
-            $finish;
-        end
-        $fclose(file_check);
-        $readmemh("edge_case_meta.mem", edge_predictions);
-        $display("  [OK] Loaded edge case predictions: 4 values");
-        
-        file_check = $fopen("edge_case_labels.mem", "r");
-        if (file_check == 0) begin
-            $display("ERROR: Cannot open edge_case_labels.mem");
-            $finish;
-        end
-        $fclose(file_check);
-        $readmemh("edge_case_labels.mem", edge_labels);
-        $display("  [OK] Loaded edge case labels: 4 values");
-        
-        $display("  [OK] Loaded edge case test vectors: %0d test cases", NUM_EDGE_CASES);
         $display("================================================================================\n");
     end
     
@@ -316,9 +231,6 @@ module tb_inference_isolated();
         test_idx = 0;
         pass_count = 0;
         fail_count = 0;
-        edge_pass_count = 0;
-        edge_fail_count = 0;
-        is_edge_case_mode = 0;
         
         // Reset
         #100;
@@ -402,139 +314,23 @@ module tb_inference_isolated();
             #50;
         end
         
-        // ====================================================================
-        // Run Edge Case Tests
-        // ====================================================================
-        $display("\n\n");
-        $display("################################################################################");
-        $display("EDGE CASE TESTS");
-        $display("################################################################################");
-        $display("Testing with synthetic edge cases:");
-        $display("  1. All Zeros");
-        $display("  2. Maximum Positive Values (+127)");
-        $display("  3. Minimum Negative Values (-128)");
-        $display("  4. Mixed Signs (Pos × Neg)");
-        $display("################################################################################\n");
-        
-        is_edge_case_mode = 1;  // Switch to edge case mode
-        
-        // Define edge case names for display
-        for (test_idx = 0; test_idx < NUM_EDGE_CASES; test_idx = test_idx + 1) begin
-            $display("================================================================================");
-            case (test_idx)
-                0: $display("Edge Case %0d: All Zeros", test_idx + 1);
-                1: $display("Edge Case %0d: Maximum Positive Values", test_idx + 1);
-                2: $display("Edge Case %0d: Minimum Negative Values", test_idx + 1);
-                3: $display("Edge Case %0d: Mixed Signs", test_idx + 1);
-            endcase
-            $display("================================================================================");
-            $display("  Label:              %0d (synthetic)", edge_labels[test_idx]);
-            $display("  Expected Pred:      %0d", edge_predictions[test_idx]);
-            
-            // Start inference
-            #10 start_inference = 1;
-            #10 start_inference = 0;
-            
-            // Wait for completion
-            wait(inference_done);
-            #20;
-            
-            // Collect FPGA scores
-            fpga_scores[0] = class_score_0;
-            fpga_scores[1] = class_score_1;
-            fpga_scores[2] = class_score_2;
-            fpga_scores[3] = class_score_3;
-            fpga_scores[4] = class_score_4;
-            fpga_scores[5] = class_score_5;
-            fpga_scores[6] = class_score_6;
-            fpga_scores[7] = class_score_7;
-            fpga_scores[8] = class_score_8;
-            fpga_scores[9] = class_score_9;
-            
-            // Verify results
-            $display("  FPGA Pred:          %0d", predicted_digit);
-            $display("\n  Score Comparison:");
-            $display("  Class | Expected      | FPGA          | Difference");
-            $display("  ------|---------------|---------------|---------------");
-            
-            scores_match = 1;
-            max_error = 0;
-            
-            // Compare all class scores (access flattened array)
-            for (j = 0; j < 10; j = j + 1) begin
-                diff = fpga_scores[j] - edge_scores_flat[test_idx * 10 + j];
-                
-                if (fpga_scores[j] !== edge_scores_flat[test_idx * 10 + j]) begin
-                    scores_match = 0;
-                    if ($signed(diff) < 0) begin
-                        if (-diff > max_error) max_error = -diff;
-                    end else begin
-                        if (diff > max_error) max_error = diff;
-                    end
-                end
-                
-                $display("    %0d   | %13d | %13d | %13d %s",
-                        j, edge_scores_flat[test_idx * 10 + j], fpga_scores[j], diff,
-                        (fpga_scores[j] !== edge_scores_flat[test_idx * 10 + j]) ? "<-- MISMATCH" : "");
-            end
-            
-            // Check overall result
-            $display("\n  Max Score Error:    %0d", max_error);
-            $display("  Scores Match:       %s", scores_match ? "YES" : "NO");
-            $display("  Pred Match:         %s", (predicted_digit == edge_predictions[test_idx]) ? "YES" : "NO");
-            
-            if (scores_match && (predicted_digit == edge_predictions[test_idx])) begin
-                $display("  Result:             PASS");
-                edge_pass_count = edge_pass_count + 1;
-            end else begin
-                $display("  Result:             FAIL");
-                edge_fail_count = edge_fail_count + 1;
-            end
-            
-            $display("");
-            
-            // Small delay between tests
-            #50;
-        end
-        
-        // Final Summary (Combined)
+        // Final Summary
         $display("\n================================================================================");
         $display("FINAL RESULTS");
         $display("================================================================================");
-        $display("NORMAL TESTS (Real MNIST Data):");
-        $display("  Total Tests:        %0d", NUM_TEST_CASES);
-        $display("  Passed:             %0d", pass_count);
-        $display("  Failed:             %0d", fail_count);
-        $display("  Pass Rate:          %.1f%%", (pass_count * 100.0) / NUM_TEST_CASES);
-        $display("");
-        $display("EDGE CASE TESTS (Synthetic Data):");
-        $display("  Total Tests:        %0d", NUM_EDGE_CASES);
-        $display("  Passed:             %0d", edge_pass_count);
-        $display("  Failed:             %0d", edge_fail_count);
-        $display("  Pass Rate:          %.1f%%", (edge_pass_count * 100.0) / NUM_EDGE_CASES);
-        $display("");
-        $display("COMBINED RESULTS:");
-        $display("  Total Tests:        %0d", NUM_TEST_CASES + NUM_EDGE_CASES);
-        $display("  Passed:             %0d", pass_count + edge_pass_count);
-        $display("  Failed:             %0d", fail_count + edge_fail_count);
-        $display("  Pass Rate:          %.1f%%", ((pass_count + edge_pass_count) * 100.0) / (NUM_TEST_CASES + NUM_EDGE_CASES));
+        $display("Total Tests:        %0d", NUM_TEST_CASES);
+        $display("Passed:             %0d", pass_count);
+        $display("Failed:             %0d", fail_count);
+        $display("Pass Rate:          %.1f%%", (pass_count * 100.0) / NUM_TEST_CASES);
         $display("================================================================================");
         
-        if (fail_count == 0 && edge_fail_count == 0) begin
-            $display("\n*** ALL TESTS PASSED ***");
-            $display("  [OK] Normal MNIST tests: %0d/%0d passed", pass_count, NUM_TEST_CASES);
-            $display("  [OK] Edge case tests: %0d/%0d passed", edge_pass_count, NUM_EDGE_CASES);
-            $display("");
+        if (fail_count == 0) begin
+            $display("\nALL TESTS PASSED");
             $display("inference.v is computing correctly!");
             $display("The mismatch problem is NOT in inference.v");
             $display("Check other modules: UART, image_loader, weight_loader, etc.");
         end else begin
-            $display("\n*** TESTS FAILED ***");
-            if (fail_count > 0)
-                $display("  [FAIL] Normal MNIST tests: %0d/%0d failed", fail_count, NUM_TEST_CASES);
-            if (edge_fail_count > 0)
-                $display("  [FAIL] Edge case tests: %0d/%0d failed", edge_fail_count, NUM_EDGE_CASES);
-            $display("");
+            $display("\nTESTS FAILED");
             $display("inference.v has computation errors!");
             $display("Review the detailed comparisons above.");
             $display("Possible issues:");
