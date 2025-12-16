@@ -224,35 +224,31 @@ module inference (
                         weight_addr <= weight_addr + 1;
                         input_addr <= current_pixel + 1;
                     end else begin
-                        // Need 2 more cycles to flush pipeline
+                        // Last pixel - need 3 more cycles to flush pipeline completely
                         state <= STATE_ADD_BIAS;
                     end
                 end
                 
                 // ============================================
-                // ADD_BIAS: Flush pipeline and add bias
+                // ADD_BIAS: Flush pipeline cycle 1
                 // ============================================
                 STATE_ADD_BIAS: begin
-                    // Last multiply
-                    weight_reg <= $signed(weight_data);
-                    pixel_reg <= input_pixel;
+                    // Pipeline continues: multiply using weight_reg/pixel_reg loaded in last COMPUTE cycle
                     product <= $signed(weight_reg) * $signed(pixel_reg);
+                    // Accumulate product from previous cycle
                     accumulator <= accumulator + {{16{product[15]}}, product};
                     
                     state <= STATE_COMPARE;
                 end
                 
                 // ============================================
-                // COMPARE: Compute final product (no accumulation needed here)
+                // COMPARE: Flush pipeline cycle 2 - final accumulation
                 // ============================================
                 STATE_COMPARE: begin
-                    // Recompute product for W[783]*P[783]
-                    // (weight_reg and pixel_reg already hold these values)
-                    product <= $signed(weight_reg) * $signed(pixel_reg);
+                    // Accumulate the last product (computed in ADD_BIAS)
+                    accumulator <= accumulator + {{16{product[15]}}, product};
                     
-                    // NOTE: accumulator already has 783 products (0..782) from STATE_ADD_BIAS
-                    // We don't accumulate here - product will be added in final_score
-                    
+                    // Note: accumulator will now contain all 784 products (0..783)
                     state <= STATE_NEXT_CLASS;
                 end
                 
@@ -260,12 +256,9 @@ module inference (
                 // NEXT_CLASS: Calculate final score and compare
                 // ============================================
                 STATE_NEXT_CLASS: begin : next_class_block
-                    // Final score = accumulator (783 products: 0..782)
-                    //             + product (W[783]*P[783])
-                    //             + bias
-                    // Total: all 784 products + bias
+                    // Final score = accumulator (all 784 products) + bias
                     reg signed [31:0] final_score;
-                    final_score = accumulator + {{16{product[15]}}, product} + current_bias;
+                    final_score = accumulator + current_bias;
                     
                     // Store the score for this class
                     class_scores[current_class] <= final_score;

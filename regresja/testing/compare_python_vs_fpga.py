@@ -5,7 +5,7 @@ This script runs the same images through both:
 1. Python simulation (with 32-bit overflow)
 2. Actual FPGA hardware via UART
 
-Results are written to a text file showing logits from both sources for comparison.
+Results can be written to a text file and/or displayed on console.
 """
 
 import serial
@@ -15,6 +15,7 @@ import os
 import struct
 import numpy as np
 from sklearn.datasets import fetch_openml
+import argparse
 
 # Import simulation functions
 from simulate_fpga_inference import (
@@ -23,17 +24,62 @@ from simulate_fpga_inference import (
     preprocess_image_fpga
 )
 
-# Configuration
-COM_PORT = 'COM3'     # Change this to your FPGA's COM port
-BAUD_RATE = 115200
-TEST_SAMPLES = 100    # Number of images to test
+# Default Configuration
+DEFAULT_COM_PORT = 'COM3'
+DEFAULT_BAUD_RATE = 115200
+DEFAULT_TEST_SAMPLES = 100
 INPUT_SCALE = 127.0   # Must match training
-OUTPUT_FILE = '../outputs/txt/comparison_output.txt'
+DEFAULT_OUTPUT_FILE = '../outputs/txt/comparison_output.txt'
 
 # Protocol Constants
 IMG_START_MARKER = bytes([0xBB, 0x66])
 IMG_END_MARKER = bytes([0x66, 0xBB])
 SCORES_READ_REQUEST = bytes([0xCD])
+
+
+class OutputWriter:
+    """Handles output to file and/or console."""
+    
+    def __init__(self, output_mode='file', file_path=None):
+        """
+        Initialize output writer.
+        
+        Args:
+            output_mode: 'file', 'console', or 'both'
+            file_path: Path to output file (required if mode is 'file' or 'both')
+        """
+        self.mode = output_mode
+        self.file_handle = None
+        
+        if output_mode in ['file', 'both']:
+            if file_path is None:
+                raise ValueError("file_path required for file output mode")
+            
+            # Create output directory if it doesn't exist
+            output_dir = os.path.dirname(file_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            
+            self.file_handle = open(file_path, 'w', encoding='utf-8')
+    
+    def write(self, text):
+        """Write text to configured output(s)."""
+        if self.mode in ['console', 'both']:
+            print(text, end='')
+        
+        if self.mode in ['file', 'both'] and self.file_handle:
+            self.file_handle.write(text)
+    
+    def close(self):
+        """Close file handle if open."""
+        if self.file_handle:
+            self.file_handle.close()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
 
 def load_mnist_test_data():
@@ -95,8 +141,17 @@ def preprocess_for_uart(image_f32, mean, scale):
     return img_int8.view(np.uint8)
 
 
-def run_comparison():
-    """Main comparison function."""
+def run_comparison(com_port, baud_rate, test_samples, output_mode, output_file):
+    """
+    Main comparison function.
+    
+    Args:
+        com_port: Serial port for FPGA connection
+        baud_rate: Serial baud rate
+        test_samples: Number of images to test
+        output_mode: 'file', 'console', or 'both'
+        output_file: Path to output file (used if mode is 'file' or 'both')
+    """
     
     # Load Python simulation model
     print("Loading Python simulation model...")
@@ -110,21 +165,20 @@ def run_comparison():
     print(f"Test data loaded: {len(X_test)} images")
     print()
     
-    # Open output file
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_path = os.path.join(script_dir, OUTPUT_FILE)
-    
-    # Create output directory if it doesn't exist
-    output_dir = os.path.dirname(output_path)
-    os.makedirs(output_dir, exist_ok=True)
-    
-    print(f"Opening output file: {output_path}")
+    # Prepare output file path
+    if output_mode in ['file', 'both']:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(script_dir, output_file)
+        print(f"Output will be saved to: {output_path}")
+    else:
+        output_path = None
+        print("Output mode: Console only")
     print()
     
     # Try to open serial connection
-    print(f"Connecting to FPGA on {COM_PORT} at {BAUD_RATE} baud...")
+    print(f"Connecting to FPGA on {com_port} at {baud_rate} baud...")
     try:
-        ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=2)
+        ser = serial.Serial(com_port, baud_rate, timeout=2)
         time.sleep(1)  # Allow FPGA to reset
         ser.reset_input_buffer()
         print("✓ Connected to FPGA")
@@ -135,21 +189,22 @@ def run_comparison():
         sys.exit(1)
     
     # Start comparison
-    print(f"Starting comparison on {TEST_SAMPLES} images...")
+    print(f"Starting comparison on {test_samples} images...")
     print("=" * 80)
+    print()
     
-    with open(output_path, 'w', encoding='utf-8') as f:
+    with OutputWriter(output_mode, output_path) as writer:
         # Write header
-        f.write("Python Simulation vs FPGA Hardware Comparison\n")
-        f.write("=" * 80 + "\n")
-        f.write(f"Total Images: {TEST_SAMPLES}\n")
-        f.write("=" * 80 + "\n\n")
+        writer.write("Python Simulation vs FPGA Hardware Comparison\n")
+        writer.write("=" * 80 + "\n")
+        writer.write(f"Total Images: {test_samples}\n")
+        writer.write("=" * 80 + "\n\n")
         
         match_count = 0
         mismatch_count = 0
         error_count = 0
         
-        for i in range(TEST_SAMPLES):
+        for i in range(test_samples):
             label = y_test[i]
             
             # Preprocess image once
@@ -171,45 +226,96 @@ def run_comparison():
             
             # Format and write results
             if fpga_scores is None:
-                f.write(f"Image {i:3d} | Label: {label} | Python Pred: {python_pred} | Python: {python_scores.tolist()}\n")
-                f.write(f"                     | FPGA Pred: ERROR | FPGA:   ERROR - Failed to read scores\n\n")
+                writer.write(f"Image {i:3d} | Label: {label} | Python Pred: {python_pred} | Python: {python_scores.tolist()}\n")
+                writer.write(f"                     | FPGA Pred: ERROR | FPGA:   ERROR - Failed to read scores\n\n")
                 error_count += 1
             else:
                 fpga_pred = np.argmax(fpga_scores)
-                f.write(f"Image {i:3d} | Label: {label} | Python Pred: {python_pred} | Python: {python_scores.tolist()}\n")
-                f.write(f"                     | FPGA Pred: {fpga_pred}   | FPGA:   {fpga_scores.tolist()}\n")
+                writer.write(f"Image {i:3d} | Label: {label} | Python Pred: {python_pred} | Python: {python_scores.tolist()}\n")
+                writer.write(f"                     | FPGA Pred: {fpga_pred}   | FPGA:   {fpga_scores.tolist()}\n")
                 
                 # Check if they match
                 if np.array_equal(python_scores, fpga_scores):
-                    f.write(f"                     | Status: ✓ MATCH (both predictions: {python_pred})\n\n")
+                    writer.write(f"                     | Status: ✓ MATCH (both predictions: {python_pred})\n\n")
                     match_count += 1
                 else:
                     max_diff = np.max(np.abs(python_scores - fpga_scores))
-                    f.write(f"                     | Status: ✗ MISMATCH (max diff: {max_diff}, Python pred: {python_pred}, FPGA pred: {fpga_pred})\n\n")
+                    writer.write(f"                     | Status: ✗ MISMATCH (max diff: {max_diff}, Python pred: {python_pred}, FPGA pred: {fpga_pred})\n\n")
                     mismatch_count += 1
             
-            # Progress indicator (every 10 images)
-            if (i + 1) % 10 == 0 or (i + 1) == TEST_SAMPLES:
-                print(f"  Processed: {i+1:3d}/{TEST_SAMPLES} images | "
-                      f"Matches: {match_count} | Mismatches: {mismatch_count} | Errors: {error_count}")
+            # Progress indicator (every 10 images) - always to console
+            if (i + 1) % 10 == 0 or (i + 1) == test_samples:
+                progress_msg = (f"  Processed: {i+1:3d}/{test_samples} images | "
+                              f"Matches: {match_count} | Mismatches: {mismatch_count} | Errors: {error_count}")
+                # Only print to console if not already in console/both mode (to avoid duplication)
+                if output_mode == 'file':
+                    print(progress_msg)
         
         # Write summary
-        f.write("=" * 80 + "\n")
-        f.write("END OF COMPARISON\n")
-        f.write("=" * 80 + "\n")
+        writer.write("=" * 80 + "\n")
+        writer.write("END OF COMPARISON\n")
+        writer.write("=" * 80 + "\n")
     
     ser.close()
     
-    print("=" * 80)
-    print(f"Comparison complete!")
-    print(f"  Total images:  {TEST_SAMPLES}")
-    print(f"  Matches:       {match_count}")
-    print(f"  Mismatches:    {mismatch_count}")
-    print(f"  Errors:        {error_count}")
-    print(f"  Output saved to: {output_path}")
-    print("=" * 80)
+    # Final summary - always to console
+    if output_mode != 'console':
+        print()
+        print("=" * 80)
+        print(f"Comparison complete!")
+        print(f"  Total images:  {test_samples}")
+        print(f"  Matches:       {match_count}")
+        print(f"  Mismatches:    {mismatch_count}")
+        print(f"  Errors:        {error_count}")
+        if output_mode in ['file', 'both']:
+            print(f"  Output saved to: {output_path}")
+        print("=" * 80)
 
 
 if __name__ == "__main__":
-    run_comparison()
+    parser = argparse.ArgumentParser(
+        description='Compare Python simulation vs FPGA hardware inference',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Save to default file (backward compatible)
+  python compare_python_vs_fpga.py
+  
+  # Print to console only
+  python compare_python_vs_fpga.py --output console
+  
+  # Save to file and print to console
+  python compare_python_vs_fpga.py --output both
+  
+  # Custom file path
+  python compare_python_vs_fpga.py --output file --file results.txt
+  
+  # Test more samples
+  python compare_python_vs_fpga.py --samples 200 --output both
+        """
+    )
+    
+    parser.add_argument('--port', type=str, default=DEFAULT_COM_PORT,
+                        help=f'Serial COM port (default: {DEFAULT_COM_PORT})')
+    parser.add_argument('--baud', type=int, default=DEFAULT_BAUD_RATE,
+                        help=f'Baud rate (default: {DEFAULT_BAUD_RATE})')
+    parser.add_argument('--samples', type=int, default=DEFAULT_TEST_SAMPLES,
+                        help=f'Number of test samples (default: {DEFAULT_TEST_SAMPLES})')
+    parser.add_argument('--output', type=str, 
+                        choices=['file', 'console', 'both'], 
+                        default='file',
+                        help='Output mode: file (save to file), console (print), or both (default: file)')
+    parser.add_argument('--file', type=str, default=DEFAULT_OUTPUT_FILE,
+                        help=f'Output file path (default: {DEFAULT_OUTPUT_FILE})')
+    
+    args = parser.parse_args()
+    
+    # Run comparison with specified arguments
+    run_comparison(
+        com_port=args.port,
+        baud_rate=args.baud,
+        test_samples=args.samples,
+        output_mode=args.output,
+        output_file=args.file
+    )
 
