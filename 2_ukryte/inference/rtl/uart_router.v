@@ -180,18 +180,25 @@ module uart_router (
                         weight_rx_data <= rx_data;
                         weight_rx_ready <= 1;
                         
-                        // Check for end marker
-                        if (prev_byte == WEIGHT_END1 && rx_data == WEIGHT_END2) begin
-                            // End of weight transfer
-                            state <= STATE_IDLE;
-                        end else begin
-                            byte_count <= byte_count + 1;
-                            prev_byte <= rx_data;
-                            
-                            // Safety: if we receive too many bytes, abort
-                            if (byte_count > WEIGHT_DATA_SIZE + 10) begin
+                        // Increment counter
+                        byte_count <= byte_count + 1;
+                        prev_byte <= rx_data;
+
+                        // === CRITICAL FIX START ===
+                        // Only check for end marker if we have received at least the expected amount of data.
+                        // This prevents random weight values that happen to be 0x55 0xAA from 
+                        // terminating the transfer early.
+                        if (byte_count >= WEIGHT_DATA_SIZE) begin
+                            if (prev_byte == WEIGHT_END1 && rx_data == WEIGHT_END2) begin
+                                // End of weight transfer
                                 state <= STATE_IDLE;
                             end
+                        end
+                        // === CRITICAL FIX END ===
+                        
+                        // Safety: Hard abort if way too many bytes (prevents locking up if marker is missed)
+                        if (byte_count > WEIGHT_DATA_SIZE + 10) begin
+                            state <= STATE_IDLE;
                         end
                     end
                 end
@@ -206,6 +213,10 @@ module uart_router (
                             state <= STATE_RECEIVING_IMAGE;
                             byte_count <= 0;
                             prev_byte <= 0;
+                            
+                            // Forward start markers to image_loader
+                            image_rx_data <= IMAGE_START2;
+                            image_rx_ready <= 1;
                         end else if (rx_data == IMAGE_START1) begin
                             // Another 0xBB, stay waiting for 0x66
                             state <= STATE_WAIT_IMAGE2;
@@ -225,18 +236,23 @@ module uart_router (
                         image_rx_data <= rx_data;
                         image_rx_ready <= 1;
                         
-                        // Check for end marker
-                        if (prev_byte == IMAGE_END1 && rx_data == IMAGE_END2 && byte_count >= IMAGE_DATA_SIZE) begin
-                            // End of image transfer
-                            state <= STATE_IDLE;
-                        end else begin
-                            byte_count <= byte_count + 1;
-                            prev_byte <= rx_data;
-                            
-                            // Safety: if we receive too many bytes, abort
-                            if (byte_count > IMAGE_DATA_SIZE + 10) begin
+                        // Increment counter
+                        byte_count <= byte_count + 1;
+                        prev_byte <= rx_data;
+
+                        // === CRITICAL FIX START ===
+                        // Only check for end marker if we have received enough data.
+                        if (byte_count >= IMAGE_DATA_SIZE) begin
+                            if (prev_byte == IMAGE_END1 && rx_data == IMAGE_END2) begin
+                                // End of image transfer
                                 state <= STATE_IDLE;
                             end
+                        end
+                        // === CRITICAL FIX END ===
+
+                        // Safety
+                        if (byte_count > IMAGE_DATA_SIZE + 10) begin
+                            state <= STATE_IDLE;
                         end
                     end
                 end
@@ -249,4 +265,3 @@ module uart_router (
     end
 
 endmodule
-

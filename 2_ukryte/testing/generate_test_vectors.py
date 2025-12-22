@@ -23,7 +23,7 @@ import sys
 
 # Configuration
 NUM_TEST_VECTORS = 100
-OUTPUT_DIR = "../inference/tb"
+OUTPUT_DIR = "../outputs/mem"
 
 # Quantization constants (must match training and hardware)
 INPUT_SCALE = 127.0
@@ -296,6 +296,8 @@ def generate_test_vectors():
 
 if __name__ == "__main__":
     generate_test_vectors()
+
+
 
 
 

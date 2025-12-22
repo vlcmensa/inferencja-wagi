@@ -29,8 +29,7 @@ Protocol:
       L3_weights (160) + L3_biases (40)
   - End marker: 0x55 0xAA (handled by uart_router)
 
-NOTE: This module NO LONGER has its own uart_rx!
-      It receives pre-routed data from uart_router.
+NOTE: This module receives pre-routed data from uart_router.
 
 Memory Layout:
   Address 0-12543:     L1_weights (12,544 bytes, 8-bit signed)
@@ -362,7 +361,9 @@ module weight_loader (
                         end
                         
                         // Check for end marker after storing
-                        if (prev_byte == END_BYTE1 && rx_data == END_BYTE2) begin
+                        // CRITICAL FIX: Only check for end marker if we have received enough data
+                        // This prevents random weight values that look like 0x55 0xAA from stopping the loader
+                        if (write_addr >= TOTAL_BYTES && prev_byte == END_BYTE1 && rx_data == END_BYTE2) begin
                             // End marker detected!
                             state <= STATE_DONE;
                             transfer_done <= 1;
@@ -370,7 +371,7 @@ module weight_loader (
                             led[3] <= 1;  // Success indicator
                         end else begin
                             // Check for overflow
-                            if (write_addr >= TOTAL_BYTES + 1) begin
+                            if (write_addr >= TOTAL_BYTES + 10) begin
                                 state <= STATE_ERROR;
                                 led[4] <= 1;
                             end else begin
@@ -407,8 +408,3 @@ module weight_loader (
     end
 
 endmodule
-
-
-
-
-

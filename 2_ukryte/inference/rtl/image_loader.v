@@ -89,4 +89,3 @@ module image_loader (
     end
 
 endmodule
-
