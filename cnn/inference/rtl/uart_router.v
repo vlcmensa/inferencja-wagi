@@ -1,0 +1,110 @@
+/*
+================================================================================
+UART Router - Binary Safe Version for CNN
+================================================================================
+Fix: Implementation of Byte Counting to ensure Binary Safety.
+We strictly ignore "End Markers" until the expected number of data bytes 
+has been received. This prevents random weights/pixels that resemble 
+protocol markers from terminating the transfer early.
+================================================================================
+*/
+
+module uart_router (
+    input wire clk,
+    input wire rst,
+    input wire rx,
+    input wire weights_loaded,
+    output reg [7:0] weight_rx_data,
+    output reg weight_rx_ready,
+    output reg [7:0] image_rx_data,
+    output reg image_rx_ready,
+    output reg [7:0] cmd_rx_data,
+    output reg cmd_rx_ready
+);
+    // Protocol Constants
+    localparam WEIGHT_START1 = 8'hAA, WEIGHT_START2 = 8'h55;
+    localparam WEIGHT_END1   = 8'h55, WEIGHT_END2   = 8'hAA;
+    localparam IMAGE_START1  = 8'hBB, IMAGE_START2  = 8'h66;
+    localparam IMAGE_END1    = 8'h66, IMAGE_END2    = 8'hBB;
+    
+    // Total Weights = 36 (Conv W) + 16 (Conv B) + 27040 (Dense W) + 40 (Dense B) = 27132
+    localparam WEIGHT_SIZE = 27132;
+    localparam IMAGE_SIZE = 784;
+
+    wire [7:0] rx_data;
+    wire rx_ready;
+    uart_rx u_rx (.clk(clk), .rst(rst), .rx(rx), .data(rx_data), .ready(rx_ready));
+
+    reg [3:0] state;
+    reg [15:0] byte_count;
+    reg [7:0] prev_byte;
+
+    localparam IDLE = 0, WAIT_W2 = 1, RECV_W = 2, WAIT_I2 = 3, RECV_I = 4;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            state <= IDLE;
+            byte_count <= 0;
+            weight_rx_ready <= 0;
+            image_rx_ready <= 0;
+            cmd_rx_ready <= 0;
+        end else begin
+            weight_rx_ready <= 0;
+            image_rx_ready <= 0;
+            cmd_rx_ready <= 0;
+
+            case (state)
+                IDLE: if (rx_ready) begin
+                    if (rx_data == WEIGHT_START1 && !weights_loaded) state <= WAIT_W2;
+                    else if (rx_data == IMAGE_START1 && weights_loaded) state <= WAIT_I2;
+                    else if ((rx_data == 8'hCC || rx_data == 8'hCD) && weights_loaded) begin
+                        cmd_rx_data <= rx_data;
+                        cmd_rx_ready <= 1;
+                    end
+                end
+
+                WAIT_W2: if (rx_ready) begin
+                    if (rx_data == WEIGHT_START2) begin
+                        state <= RECV_W;
+                        byte_count <= 0;
+                        // Forward marker to reset loader
+                        weight_rx_data <= rx_data;
+                        weight_rx_ready <= 1;
+                    end else state <= IDLE;
+                end
+
+                RECV_W: if (rx_ready) begin
+                    weight_rx_data <= rx_data;
+                    weight_rx_ready <= 1;
+                    byte_count <= byte_count + 1;
+                    prev_byte <= rx_data;
+                    
+                    // BINARY SAFETY: Only check end marker if we have enough bytes
+                    if (byte_count >= WEIGHT_SIZE && prev_byte == WEIGHT_END1 && rx_data == WEIGHT_END2)
+                        state <= IDLE;
+                end
+
+                WAIT_I2: if (rx_ready) begin
+                    if (rx_data == IMAGE_START2) begin
+                        state <= RECV_I;
+                        byte_count <= 0;
+                        image_rx_data <= rx_data;
+                        image_rx_ready <= 1;
+                    end else state <= IDLE;
+                end
+
+                RECV_I: if (rx_ready) begin
+                    image_rx_data <= rx_data;
+                    image_rx_ready <= 1;
+                    byte_count <= byte_count + 1;
+                    prev_byte <= rx_data;
+
+                    if (byte_count >= IMAGE_SIZE && prev_byte == IMAGE_END1 && rx_data == IMAGE_END2)
+                        state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+
+
